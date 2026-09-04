@@ -154,38 +154,226 @@ If you already have the database set up, just **re-import `database/schema.sql`*
 
 XP itself is **not stored anywhere** — it's calculated live every time from `COUNT(check-ins) × 10 + achievement bonuses`, so it can never drift out of sync with your real activity, and levels update instantly as soon as you check in.
 
-## What's new: Finance tracking + ML Forecast
+## What's new: Finance tracking + Forecasting & Predictive Analytics
+
+This is the Milestone 2 feature: **Implement financial forecasting
+models · Develop productivity and habit analysis engine · Generate
+future trend predictions.**
 
 - **finance.php ("Finance")** — log income/expenses by category, see this
   month's income/expense/savings/savings-rate, and a category spending
   breakdown.
-- **forecast.php ("Forecast")** — projects next 1-3 months of income,
-  expenses and savings, plus your next week's habit-completion rate,
-  with an actual-vs-forecast chart and a model performance table
-  (MAE/RMSE).
-  > **Important for your Q&A:** this is a real, if intentionally simple,
-  > ML pipeline (`ml/train_model.py`) — **scikit-learn Linear Regression**
-  > and a **Moving Average** model, backtested against your own recent
-  > months to pick whichever predicts better. The finance forecast blends
-  > your own transaction categories with category patterns learned from a
+- **forecast.php ("Forecast")** — two tabs:
+  - **💰 Finance** — projects next 1–3 months of income, expenses and
+    savings, with an actual-vs-forecast chart, a projected category
+    breakdown, and a collapsible model-performance comparison (MAE/RMSE
+    for both candidate models, not just the winner).
+  - **🌱 Productivity & Habits** — the productivity-and-habit-analysis
+    engine: a computed **Productivity Score** (0–100, blending your
+    weekly completion rate with an estimated time-invested figure),
+    forecast forward the same way as the finance numbers; a **Time
+    Allocation** donut showing where your estimated time went by
+    category this week; a goal-by-goal **Habit Overview** (this week's
+    % and current streak); and insight cards (best/worst category, most
+    consistent weekday, trend commentary).
+  > **Important for your Q&A:** the *forecasting* half is a real, if
+  > intentionally simple, ML pipeline (`ml/train_model.py`) —
+  > **scikit-learn Linear Regression** and a **Moving Average** model,
+  > backtested against your own recent history to pick whichever
+  > predicts better, for both the finance numbers and the productivity
+  > score. The *analysis* half (habit overview, time allocation,
+  > best/worst category) is live, explainable PHP logic in
+  > `includes/helpers.php` — the same "rule-based, not a black box"
+  > philosophy as `coach.php`, computed fresh on every page load with no
+  > retraining needed. The finance forecast additionally blends your own
+  > transaction categories with category patterns learned from a
   > **benchmark personal-finance dataset** (solves the "I just started
-  > tracking, I have no history" cold-start problem — the blend leans
-  > more on your own data every month you log). That benchmark
+  > tracking, I have no history" cold-start problem — and even before
+  > you log a single transaction, the Finance tab shows a clearly-labelled
+  > preview of the benchmark's own category breakdown, so the dataset is
+  > visibly doing something from day one). That benchmark
   > (`ml/data/finance_benchmark.xlsx`) is **synthetic** — generated to have
   > a realistic shape, not downloaded from Kaggle — and
   > `ml/data/README_DATASET.md` says so plainly; swap in a real Kaggle
-  > file any time by following that same doc. The habit forecast uses
-  > only your own check-in history. No external AI API is called — see
-  > `ml/README_ML.md` for the one-time setup and `ml/forecasting.py` for
-  > every formula.
+  > file any time by following that same doc. No external AI API is
+  > called anywhere — see `ml/README_ML.md` for the one-time setup and
+  > `ml/forecasting.py` for every formula.
 
-### New database tables (Finance + Forecast)
+### New database tables & columns (Finance + Forecast)
 
-| Table | Stores |
+| Table / column | Stores |
 |---|---|
 | `transactions` | every income/expense entry: type, category, amount, date, note |
 | `forecast_cache` | the latest forecast JSON per user, written by `ml/train_model.py`, read by `forecast.php` |
+| `goals.est_minutes` | a self-reported "typical minutes per check-in" per goal (default 20), set on the Add Goal form — powers the Productivity Score and Time Allocation chart |
 
-Re-import `database/schema.sql` once to create these two tables (same
-safe `CREATE TABLE IF NOT EXISTS` pattern as always), then follow
+Re-import `database/schema.sql` once to create the new tables/column
+(same safe `IF NOT EXISTS` pattern as always), then follow
 `ml/README_ML.md` to generate your first forecast.
+
+## What's new: full navigation rebuild, Focus Sessions, Goals, Calendar, Reminders & Settings
+
+The sidebar was reorganised into **Track** (Activity Tracker, Habit Tracker,
+Mood Tracker, Focus Sessions, Goals), **Analyze** (Productivity Analysis,
+Insights & Reports, Finance, Forecast), **Plan** (Calendar View, Reminders),
+**More** (Rewards, AI Coach) and **Account** (Settings). A few pages were
+consolidated or replaced along the way:
+
+- **activity.php ("Activity Tracker")** replaces the separate
+  `academic.php` / `study.php` / `habits.php` / `fitness.php` / `work.php`
+  links — one page, with a category filter tab strip (`?cat=slug`), showing
+  every goal's day-box grid and streak ring across all categories in one
+  place. Those old files still exist on disk (untouched) but nothing in the
+  new nav links to them any more.
+- **goals.php ("Goals")** — a dedicated place to see, add, edit and delete
+  every goal (title, description, category, typical minutes per session),
+  separate from day-to-day check-ins (which still happen on Activity
+  Tracker).
+- **habit_tracker.php ("Habit Tracker")** — Habit Score (a 4-week rolling
+  completion average), best current streak, total lifetime check-ins, a
+  12-week check-in heatmap, and every habit's weekly % + streak in one list.
+- **focus.php ("Focus Sessions") + focus_log.php** — a real, working
+  countdown timer: pick an optional goal and a duration (15/25/45/60 min or
+  custom), start it, and it counts down live in the browser. Finishing or
+  giving up early logs a row to the new `focus_sessions` table with
+  server-computed start/end times (never trusted from the browser clock),
+  and the KPI row (sessions this week, average length, success rate, total
+  time) is calculated fresh from real logged sessions — nothing here is
+  fabricated.
+- **productivity.php ("Productivity Analysis")** — the productivity-and-
+  habit-analysis engine now lives here on its own page (previously a tab on
+  Forecast): Productivity Score, Habit Score, tasks completed today, current
+  streak, focus time this week, weekly goal progress, the backtested
+  Productivity Score forecast chart, a Time Allocation donut (now blending
+  real Focus Session minutes with each goal's estimate — whichever is
+  larger — via `category_time_allocation()`), an insights summary, a 12-week
+  activity heatmap, and Focus Sessions / Habit Overview summary cards.
+- **calendar.php ("Calendar View")** — a month grid coloured by daily
+  check-in volume, with the day's mood emoji shown when one was logged.
+- **reminders.php ("Reminders")** — simple recurring reminders (title, time,
+  days of week, optional linked goal) that show up as a "Today" list on the
+  Dashboard and on the Reminders page itself. Sprout does **not** send
+  emails, texts or push notifications for these yet — the page says so
+  plainly so it's never mistaken for something it isn't.
+- **settings.php ("Settings")** replaces `profile.php` for account
+  management: update name/email/avatar colour, biodata (date of birth +
+  gender — age is computed live from the date of birth), and change
+  password (current-password check, minimum length, confirm-match).
+- **mood.php** gained a Week / Month / All-time stats toggle
+  (`?range=week|month|all`) with a matching mood-distribution breakdown, on
+  top of the existing daily check-in and wellness score.
+- **forecast.php ("Forecast")** is now Finance-only (the productivity tab
+  moved to Productivity Analysis above) and gained the metrics from the
+  Milestone 2 brief that weren't on it yet: **Profit Margin** (profit as %
+  of revenue), **Cash Flow** (a cumulative running cash-position chart, fed
+  by monthly profit — distinct from the per-month Profit figure), and a
+  **Forecast Summary** table (Revenue / Expense / Profit / Profit Margin /
+  Cash Flow, this month vs. next month) plus a renamed **Top Insights**
+  section.
+
+### New database tables & columns (Phase 3)
+
+| Table / column | Stores |
+|---|---|
+| `focus_sessions` | one row per finished/interrupted focus session: user, optional goal, planned vs. actual minutes, status, server-computed start/end times |
+| `reminders` | title, time, days of week (as `Mon,Tue,...`), optional linked goal, active/paused flag |
+| `users.birthdate`, `users.gender` | biodata set from Settings; age is computed on the fly, never stored |
+
+Re-import `database/schema.sql` once — it's the same safe
+`CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` pattern as always,
+so your existing users, goals, transactions and check-in history are
+untouched. Then re-run `python ml/train_model.py` once (see
+`ml/README_ML.md`) — the training script now also blends real
+`focus_sessions` minutes into the weekly time-invested figure it feeds the
+Productivity Score forecast, so a retrain picks that up.
+
+### The bundled benchmark dataset is now bigger
+
+`ml/data/finance_benchmark.xlsx` was regenerated at **2,378 rows** spanning
+January 2015 – June 2025 (10.5 years), up from the original 472-row / ~1-year
+version — still the same clearly-labelled **synthetic** dataset described in
+`ml/data/README_DATASET.md`, just with more history for the forecasting
+models to learn from.
+
+## What's new: more data-entry points, more graphs, and a third forecasting model
+
+This round closes three gaps: pages that only *displayed* data with no way to
+add it, sections that were still visual placeholders rather than being wired
+to real data, and the forecasting model set only having two candidates.
+
+- **Habit Tracker now lets you check in directly.** Every habit card on
+  `habit_tracker.php` has its own Mon–Sun day-box strip (the same widget
+  Activity Tracker uses) — tap a box to check that day done/not done without
+  leaving the page. No new JavaScript needed: it reuses the global
+  delegated click handler in `js/app.js` that already powers Activity
+  Tracker's day boxes.
+- **Focus Sessions now has a manual-entry form.** Not every session gets
+  timed live — the new "Log a past session instead" link on `focus.php`
+  opens a form (goal, date, time, minutes, completed/interrupted) that
+  inserts straight into `focus_sessions`, so past work isn't lost just
+  because the timer wasn't running.
+- **Insights & Reports was fully rebuilt**, not just renamed. It now pulls
+  from live queries across the whole app — a "Category comparison this
+  week" bar chart, an 8-week "Mood & wellness trend" line chart, a full
+  "Financial snapshot" section (income/expense/profit KPIs + a 6-month
+  trend chart), an auto-generated plain-language weekly report (assembled
+  from the same numbers shown on the page — no ML, no external AI), and a
+  **Print report** button (`window.print()` with a print-only stylesheet
+  that hides the sidebar and buttons).
+- **Finance gained two more charts:** a category-breakdown donut (same
+  categories as the existing bar list, easier to scan at a glance) and a
+  full-width "Income vs. expenses — last 6 months" line chart, both built
+  from your own live transactions (`monthly_transaction_totals()` in
+  `includes/helpers.php` — no retraining needed, they update the moment
+  you log a transaction).
+- **Dashboard gained three more charts:** a "This week's check-ins" bar
+  chart, a compact "Time allocation" donut + legend, and a "Finance
+  snapshot" mini-card linking to Forecast — the Dashboard went from 2
+  charts to 5.
+- **Productivity Analysis gained trend-delta badges and two new mini
+  cards.** The Productivity Score, Habit Score, Tasks Completed, and Focus
+  Time KPI cards each now show a small "▲ +6% vs last week" / "▼ −1 vs
+  last Friday" style badge (green = up, red = down, grey = flat/no prior
+  data), and the Current Streak card shows your all-time personal-best
+  streak alongside the live one. Two new cards — **Top Productive Day**
+  and **Least Productive Day** — show which weekday you complete the most
+  vs. least of your habits on average (a genuine 0–100 score per weekday
+  over the last 8 weeks, via the new `weekday_productivity_scores()`
+  helper — not just a raw all-time check-in count). A small **Today's
+  Quote** widget rounds out the row (a static list, picked deterministically
+  by day-of-year — no external API).
+- **Forecast gained a third model — ARIMA — and two new cards.** See
+  "What model is this, really?" in `ml/README_ML.md` for the full
+  rationale (including why Prophet was considered and rejected). In
+  short: Linear Regression, Moving Average and ARIMA are all backtested,
+  and the "Why these numbers?" table now compares all three (with MAE,
+  RMSE, *and* MAPE). A new **"Forecast summary — next month, by model"**
+  card shows what each of the three models individually predicts for
+  revenue/expense/profit/margin/cash flow, and a new **"How your data
+  connects to the benchmark dataset"** card explains — with your actual
+  numbers and a worked example — exactly how your logged transactions and
+  the benchmark dataset combine to produce the category-spend forecast.
+
+### New helpers in `includes/helpers.php` (round 2)
+
+| Function | Purpose |
+|---|---|
+| `weekly_checkin_bars()` | This week's check-ins per day (Dashboard bar chart) |
+| `wellness_score_weekly()` | Weekly-bucketed wellness score trend (Insights mood chart) |
+| `monthly_transaction_totals()` | Live month-by-month income/expense (Finance & Insights charts) |
+| `category_completion_this_week()` | Full category comparison, sorted (Insights bar chart) |
+| `short_label()` | Dependency-free label truncation (no `mbstring` required) |
+| `habit_score_prev_week()` | Habit Score computed one week back, for the trend-delta badge |
+| `focus_minutes_prev_week()` | Prior week's focus minutes, for the Focus Time trend-delta badge |
+| `tasks_completed_on()` | Check-ins completed on a given date, for the Tasks Completed delta |
+| `trend_delta()` / `trend_delta_count()` | Builds the "▲ +6% vs last week" badge data |
+| `all_time_best_streak()` | Longest streak any goal has ever reached, for the Current Streak card |
+| `weekday_productivity_scores()` | Per-weekday average completion score (Top/Least Productive Day) |
+| `daily_quote()` | Static rotating quote for the Productivity Analysis page |
+
+No new database tables were needed for any of this — it's all built from
+existing `goals`, `goal_logs`, `focus_sessions`, `mood_logs` and
+`transactions` data, plus the ML-cached `forecast_cache` payload's new
+`model_forecasts_next_month`, `user_data_weight_pct` and
+`months_of_history_used` fields (written by `ml/train_model.py` — re-run it
+after updating, see `ml/README_ML.md`).

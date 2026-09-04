@@ -61,6 +61,17 @@ $stmt = $pdo->prepare("SELECT COUNT(DISTINCT DATE_FORMAT(txn_date, '%Y-%m')) c F
 $stmt->execute([$uid]);
 $months_logged = (int)$stmt->fetch()['c'];
 
+// ---- Category spending donut (this month) ----
+$cat_colors = ['#5C8AE6','#EE8AD1','#9391F5','#D7F171','#F7B1E3','#C7D8FF','#FFD7C2','#B9F0D3','#EAA1D8','#8FAE8B','#B8B7FF','#FFB1A1'];
+$donut_segments = [];
+foreach ($cat_breakdown as $i => $c) {
+    $donut_segments[$c['category']] = ['value' => (float)$c['total'], 'color' => $cat_colors[$i % count($cat_colors)]];
+}
+$exp_donut = svg_donut_chart($donut_segments);
+
+// ---- Income vs. expense — last 6 months, live from your own transactions ----
+$history6 = monthly_transaction_totals($pdo, $uid, 6);
+
 require_once __DIR__ . '/includes/header.php';
 ?>
 
@@ -72,21 +83,21 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <div class="bento-grid">
-    <div class="bento-cell">
+    <div class="bento-cell anim-in">
         <h4>Income</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;">₹<?= number_format($totals['income'], 0) ?></div>
+        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-prefix="₹" data-target="<?= $totals['income'] ?>">₹0</span></div>
     </div>
-    <div class="bento-cell">
+    <div class="bento-cell anim-in">
         <h4>Expenses</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;">₹<?= number_format($totals['expense'], 0) ?></div>
+        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-prefix="₹" data-target="<?= $totals['expense'] ?>">₹0</span></div>
     </div>
-    <div class="bento-cell">
+    <div class="bento-cell anim-in">
         <h4>Net savings</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px; color:<?= $net_savings >= 0 ? 'var(--ink)' : '#B8447A' ?>">₹<?= number_format($net_savings, 0) ?></div>
+        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px; color:<?= $net_savings >= 0 ? 'var(--ink)' : '#B8447A' ?>"><span class="count-up" data-prefix="₹" data-target="<?= $net_savings ?>">₹0</span></div>
     </div>
-    <div class="bento-cell">
+    <div class="bento-cell anim-in">
         <h4>Savings rate</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><?= $savings_rate ?>%</div>
+        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-target="<?= $savings_rate ?>" data-suffix="%">0%</span></div>
     </div>
 </div>
 
@@ -98,16 +109,62 @@ require_once __DIR__ . '/includes/header.php';
         <?php else: foreach ($cat_breakdown as $c): $pct = $cat_max > 0 ? round(($c['total'] / $cat_max) * 100) : 0; ?>
         <div class="tracker-row">
             <span><?= htmlspecialchars($c['category']) ?></span>
-            <div class="tracker-bar"><span style="width:<?= $pct ?>%"></span></div>
+            <div class="tracker-bar"><span class="grow-in" style="width:<?= $pct ?>%"></span></div>
             <strong>₹<?= number_format($c['total'], 0) ?></strong>
         </div>
         <?php endforeach; endif; ?>
     </div>
-    <div class="bento-cell span-2" style="justify-content:center; align-items:flex-start; gap:14px;">
+    <div class="bento-cell span-2">
+        <h4>Category breakdown
+            <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">The same category totals as the bars on the left, drawn as a donut so you can see relative share at a glance.</span></span>
+        </h4>
+        <?php if (empty($donut_segments)): ?>
+            <div class="empty-state" style="padding:24px 10px;"><p style="font-size:13px;">No expenses logged yet this month.</p></div>
+        <?php else: ?>
+        <div class="donut-wrap">
+            <div class="donut-figure">
+                <?= $exp_donut['svg'] ?>
+                <div class="donut-center-label">
+                    <div class="dc-num">₹<?= number_format($exp_donut['total'], 0) ?></div>
+                    <div class="dc-label">this month</div>
+                </div>
+            </div>
+            <div class="donut-legend">
+                <?php foreach ($exp_donut['legend'] as $name => $seg): ?>
+                <div class="dl-row">
+                    <span class="dl-dot" style="background:<?= $seg['color'] ?>;"></span>
+                    <span><?= htmlspecialchars($name) ?></span>
+                    <span class="dl-pct"><?= $seg['pct'] ?>%</span>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="bento-grid">
+    <div class="bento-cell span-4">
+        <h4>Income vs. expenses — last <?= count($history6['months']) ?: 6 ?> months
+            <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">Straight from your own logged transactions — no forecasting or benchmark blending here, just what actually happened month by month.</span></span>
+        </h4>
+        <?php if (empty($history6['months'])): ?>
+            <div class="empty-state" style="padding:24px 10px;"><p style="font-size:13px;">Log a few transactions across different months to see this chart fill in.</p></div>
+        <?php else: ?>
+        <?= svg_line_chart($history6['months'], [
+            'Income' => ['actual' => $history6['income'], 'forecast' => [], 'color' => '#5C8AE6'],
+            'Expense' => ['actual' => $history6['expense'], 'forecast' => [], 'color' => '#EE8AD1'],
+        ], 1100, 200) ?>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="bento-grid">
+    <div class="bento-cell span-4" style="justify-content:center; align-items:flex-start; gap:14px;">
         <h4>🔮 Want to see where this is headed?</h4>
         <p style="font-size:13.5px; font-weight:500; color:var(--ink-soft); line-height:1.5;">
-            The Forecast page projects next month's income, expenses and savings using your
-            <?= $months_logged ?> month<?= $months_logged == 1 ? '' : 's' ?> of history
+            The Forecast page projects next month's income, expenses and savings — plus profit margin
+            and cash flow — using your <?= $months_logged ?> month<?= $months_logged == 1 ? '' : 's' ?> of history
             <?= $months_logged < 6 ? 'blended with typical spending patterns from a benchmark dataset' : '' ?>.
         </p>
         <a href="forecast.php" class="btn btn-violet btn-sm">View forecast →</a>

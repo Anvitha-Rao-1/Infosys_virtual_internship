@@ -1,33 +1,101 @@
-# Finance + Habit Forecasting — setup (one-time)
+# Forecasting & Predictive Analytics — setup (one-time)
 
-This adds a **Finance** page (log income/expenses) and a **Forecast** page
-(ML-projected income, expenses, savings, and habit completion rate) to
-Sprout. The forecasting itself runs in Python — the PHP app never needs
-Python to be *running*, only to have been *run once* to fill in the
-`forecast_cache` table.
+This adds a **Finance** page (log income/expenses) and a two-tab
+**Forecast** page to Sprout — this is the Milestone 2 deliverable:
+*Implement financial forecasting models · Develop productivity and habit
+analysis engine · Generate future trend predictions.* The forecasting
+itself runs in Python — the PHP app never needs Python to be *running*,
+only to have been *run once* to fill in the `forecast_cache` table.
 
 ## What model is this, really?
 
 Nothing fancy, and that's on purpose — it's explainable and you can defend
 every number in a viva:
 
-- **Linear Regression** (scikit-learn) fitted on your month-by-month income
-  and expense totals, to project a trend forward.
-- **Moving Average** as the alternative candidate.
-- A **backtest** (predict the last few real months using only earlier
-  months, compare to what actually happened) picks whichever of the two
-  was more accurate — that's where the MAE/RMSE numbers on the Forecast
-  page come from.
-- Your own transaction **category split** (e.g. how much of your spending
-  is Food vs Rent) is blended with the same split computed from a
-  **benchmark finance dataset**, weighted so it leans more on your own data
-  the more months you've logged (fully your own data after 6 months). This
-  solves the "I've only logged 2 weeks, I have no idea what my spending
-  even looks like yet" cold-start problem.
-- Habit/goal completion-rate forecasting uses the same Linear
-  Regression/Moving-Average approach on your own weekly check-in history —
-  no benchmark dataset involved there, since that's inherently personal
-  behavioural data.
+- **Linear Regression** (scikit-learn) fitted on your month-by-month (or
+  week-by-week, for habits) totals, to project a trend forward.
+- **Moving Average** as a second candidate.
+- **ARIMA(1,1,1)** (via `statsmodels`) as a third candidate — a classic
+  time-series model that looks at how each period differs from the one
+  before it, rather than just fitting a straight line. It needs at least
+  6 periods of history to fit; with less than that it silently falls back
+  to Moving Average rather than erroring.
+- A **backtest** (predict the last few real periods using only earlier
+  ones, compare to what actually happened) picks whichever of the three
+  was more accurate — that's where the MAE, RMSE *and* MAPE numbers on
+  the Forecast page come from, for *all three* candidates side-by-side
+  (see the "Why these numbers?" disclosure under each chart), not just
+  the winner. Income and expense each pick their own best model
+  independently — it's common for one to be better predicted by ARIMA
+  and the other by Linear Regression.
+
+  **Why not Facebook Prophet, if the assignment mentions it?** We looked
+  at it and deliberately decided against it: Prophet is a heavy
+  dependency (pulls in `cmdstanpy`/a compiled Stan backend) that's
+  fragile to `pip install` reliably on a typical student's Windows +
+  XAMPP + system-Python setup — exactly the install-breaks-in-front-of-
+  the-grader risk this project has tried hard to avoid everywhere else.
+  ARIMA via `statsmodels` gives the same "real time-series model, not
+  just a straight line" story for the report, installs cleanly with one
+  `pip install`, and is what's used here instead.
+- **Financial forecasting**: your own transaction **category split** (e.g.
+  how much of your spending is Food vs Rent) is blended with the same
+  split computed from a **benchmark finance dataset**, weighted so it
+  leans more on your own data the more months you've logged (fully your
+  own data after 6 months). This solves the "I've only logged 2 weeks, I
+  have no idea what my spending even looks like yet" cold-start problem —
+  and even with **zero** transactions logged, the Finance tab still shows
+  a clearly-labelled preview of the benchmark dataset's own category
+  breakdown, so it's never just a blank page.
+- **Productivity & habit analysis engine**: a **Productivity Score**
+  (0–100) computed per week as `0.6 × completion rate + 0.4 × estimated
+  time invested` — where "time invested" comes from each goal's own
+  `est_minutes` (a rough per-check-in time estimate you set when creating
+  the goal) × how many times you checked in, versus what all your active
+  goals would take if you hit every one, every day. That score (and your
+  plain completion %) is forecast forward with the same backtested
+  Linear Regression / Moving Average approach — no benchmark dataset
+  involved here, since this is inherently personal behavioural data. The
+  rest of the Productivity & Habits tab (habit-by-habit streaks, time
+  allocation by category, best/worst category, most consistent weekday)
+  is live, rule-based PHP in `includes/helpers.php` — no retraining
+  needed for those, they're just a query away.
+
+- **Profit Margin & Cash Flow** (new): profit margin is projected profit as
+  a percentage of projected revenue, per month. Cash flow is a **cumulative
+  running total** of every month's profit added together — deliberately a
+  different shape of number from "profit" (which is per-month): a rising
+  cash-flow line means the running balance is building up, a falling one
+  means it's draining down, even in a month where profit itself is
+  positive but smaller than before. Both are forecast the same
+  backtested way and shown on the Forecast page's KPI row, chart, and
+  Forecast Summary table.
+- **Focus Session blending** (new): the weekly time-invested figure that
+  feeds the Productivity Score now takes the larger of (a) estimated
+  minutes from `est_minutes × check-ins` and (b) real minutes actually
+  logged via the Focus Sessions timer that week — so a user who has
+  started timing their sessions gets credit for their real time, not just
+  the rough estimate.
+- **Forecast Summary, by model** (new): alongside the "this month vs.
+  next month" table, the Forecast page now has a second table showing
+  what *each* of the three candidate models (Linear Regression, Moving
+  Average, ARIMA) individually predicts for next month's revenue,
+  expense, profit, profit margin and cumulative cash flow — computed in
+  `build_finance_forecast()` in `train_model.py` and cached under the
+  `model_forecasts_next_month` key. This is what actually gets used to
+  pick the KPI cards at the top of the page (whichever model backtested
+  more accurately per the MAE/RMSE/MAPE table wins), laid out so you can
+  see all three side-by-side rather than just the winner.
+- **How your data connects to the benchmark dataset** (new): a card on
+  the Forecast page spells out, in plain language and with your actual
+  numbers, exactly how many months of your own history you've logged,
+  what percentage of the category-spend forecast currently comes from
+  your own data vs. the benchmark dataset (`user_data_weight_pct` in the
+  cached payload — 0% with no history, 100% after 6 months), and a
+  worked example using your own top categories. This only affects the
+  **category-spend breakdown** — the headline Income vs. Expense
+  forecast always uses only your own logged transactions, never the
+  benchmark dataset.
 
 No external AI API is called anywhere in this feature.
 
@@ -80,7 +148,12 @@ the file extension.)
 
 In the app, add a handful of transactions on the **Finance** page (a
 mix of income and expense, spread across a couple of different dates is
-enough to try it — more months of history = better forecasts).
+enough to try it — more months of history = better forecasts), and keep
+checking in on your goals as usual on the category pages — that's what
+feeds the Productivity & Habits tab. If you re-imported `schema.sql`
+after updating, every goal (new or existing) has a **"typical time per
+check-in"** field (defaults to 20 minutes) — set it honestly per goal, it
+directly feeds the Productivity Score and Time Allocation chart.
 
 ## 5. Run the training script
 

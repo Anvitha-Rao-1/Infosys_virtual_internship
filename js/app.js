@@ -78,3 +78,48 @@ document.addEventListener('click', async (e) => {
         box.style.pointerEvents = '';
     }
 });
+
+/* ============================================================
+   Milestone 2 additions — motion effects + info tooltips used on
+   the Forecast page (and anywhere else that opts in with the same
+   class names). Kept generic/reusable rather than page-specific.
+   ============================================================ */
+
+// Progress bars / chart bars that already carry their final inline
+// width from PHP: animate them growing in from 0 on page load.
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.grow-in').forEach(el => {
+        const target = el.style.width;
+        if (!target) return;
+        el.style.width = '0%';
+        requestAnimationFrame(() => requestAnimationFrame(() => { el.style.width = target; }));
+    });
+
+    // Animated count-up for headline numbers: <span class="count-up"
+    // data-target="78" data-suffix="%">0</span>
+    document.querySelectorAll('.count-up').forEach(el => {
+        const target = parseFloat(el.dataset.target || '0');
+        if (Number.isNaN(target)) return;
+        const prefix = el.dataset.prefix || '';
+        const suffix = el.dataset.suffix || '';
+        const decimals = el.dataset.decimals ? parseInt(el.dataset.decimals, 10) : 0;
+        const duration = 900;
+        const startTime = performance.now();
+        function tick(now) {
+            const t = Math.min(1, (now - startTime) / duration);
+            const eased = 1 - Math.pow(1 - t, 3);
+            const val = target * eased;
+            el.textContent = prefix + val.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
+            if (t < 1) requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+    });
+});
+
+// "i" info dots (what-does-this-mean tooltips): click to open, click
+// anywhere else to close. Keyboard-focusable via tabindex in the markup.
+document.addEventListener('click', (e) => {
+    document.querySelectorAll('.info-dot.open').forEach(dot => {
+        if (!dot.contains(e.target)) dot.classList.remove('open');
+    });
+});

@@ -4,7 +4,7 @@ require_once __DIR__ . '/includes/helpers.php';
 require_login();
 $user = current_user();
 $uid = $user['id'];
-$page_title = 'Mood Tracking';
+$page_title = 'Mood Tracker';
 $active = 'mood';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mood'])) {
@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mood'])) {
         $stmt->execute([$uid, $mood, $sleep, $stress, $note]);
         evaluate_achievements($pdo, $uid);
     }
-    header('Location: mood.php?saved=1');
+    header('Location: mood.php?saved=1&range=' . urlencode($_GET['range'] ?? 'month'));
     exit;
 }
 
@@ -27,28 +27,40 @@ $today_mood = todays_mood($pdo, $uid);
 $score = wellness_score($pdo, $uid);
 $streak = mood_streak_days($pdo, $uid);
 
-// last 28 days for the calendar grid
-$stmt = $pdo->prepare("SELECT log_date, mood FROM mood_logs WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL 27 DAY)");
-$stmt->execute([$uid]);
+// ---- Stats view toggle: week / month / all ----
+$range = $_GET['range'] ?? 'month';
+if (!in_array($range, ['week', 'month', 'all'])) $range = 'month';
+$cal_span_days = ['week' => 7, 'month' => 28, 'all' => 90][$range];
+$stats_span_days = ['week' => 7, 'month' => 30, 'all' => 3650][$range];
+
+$stmt = $pdo->prepare("SELECT log_date, mood FROM mood_logs WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)");
+$stmt->execute([$uid, $cal_span_days - 1]);
 $mood_by_date = [];
 foreach ($stmt->fetchAll() as $r) $mood_by_date[$r['log_date']] = $r['mood'];
 
 $cal_days = [];
-$cursor = new DateTime('-27 days');
-for ($i = 0; $i < 28; $i++) { $cal_days[] = $cursor->format('Y-m-d'); $cursor->modify('+1 day'); }
+$cursor = new DateTime('-' . ($cal_span_days - 1) . ' days');
+for ($i = 0; $i < $cal_span_days; $i++) { $cal_days[] = $cursor->format('Y-m-d'); $cursor->modify('+1 day'); }
 
-// sleep + stress last 7 days
-$stmt = $pdo->prepare("SELECT log_date, sleep_hours, stress_level FROM mood_logs WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) ORDER BY log_date");
-$stmt->execute([$uid]);
-$week_rows = $stmt->fetchAll();
-$avg_sleep = 0; $sleep_n = 0; $high_stress_days = 0;
-foreach ($week_rows as $r) {
+$stmt = $pdo->prepare("SELECT log_date, sleep_hours, stress_level FROM mood_logs WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ORDER BY log_date");
+$stmt->execute([$uid, $stats_span_days - 1]);
+$span_rows = $stmt->fetchAll();
+$avg_sleep = 0; $sleep_n = 0; $high_stress_days = 0; $days_logged = count($span_rows);
+$mood_counts = [];
+foreach ($span_rows as $r) {
     if ($r['sleep_hours'] !== null) { $avg_sleep += (float)$r['sleep_hours']; $sleep_n++; }
     if ($r['stress_level'] === 'high') $high_stress_days++;
 }
 $avg_sleep = $sleep_n > 0 ? round($avg_sleep / $sleep_n, 1) : null;
 
+// mood distribution over the selected range (for the "all time" / "month" view)
+$stmt = $pdo->prepare("SELECT mood, COUNT(*) c FROM mood_logs WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY) GROUP BY mood");
+$stmt->execute([$uid, $stats_span_days - 1]);
+foreach ($stmt->fetchAll() as $r) $mood_counts[$r['mood']] = (int)$r['c'];
+$mood_total = array_sum($mood_counts);
+
 require_once __DIR__ . '/includes/header.php';
+$range_labels = ['week' => 'Last 7 days', 'month' => 'Last 30 days', 'all' => 'All time'];
 ?>
 
 <?php if (isset($_GET['saved'])): ?><div class="alert alert-success">Today's check-in saved 💛</div><?php endif; ?>
@@ -114,10 +126,19 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
+<div class="section-title">
+    <h2>Stats</h2>
+</div>
+<div class="seg-tabs">
+    <button class="<?= $range === 'week' ? 'active' : '' ?>" onclick="location.href='mood.php?range=week'">Week</button>
+    <button class="<?= $range === 'month' ? 'active' : '' ?>" onclick="location.href='mood.php?range=month'">Month</button>
+    <button class="<?= $range === 'all' ? 'active' : '' ?>" onclick="location.href='mood.php?range=all'">All time</button>
+</div>
+
 <div class="bento-grid">
-    <div class="bento-cell span-2">
-        <h4>Mood calendar · last 28 days</h4>
-        <div class="mood-cal">
+    <div class="bento-cell span-2 anim-in">
+        <h4>Mood calendar · <?= strtolower($range_labels[$range]) ?></h4>
+        <div class="mood-cal" style="<?= $range === 'all' ? 'grid-template-columns: repeat(15, 1fr);' : '' ?>">
             <?php foreach ($cal_days as $d):
                 $m = $mood_by_date[$d] ?? null;
                 $bg = $m ? MOOD_META[$m]['color'] : '#EFEFEF';
@@ -128,20 +149,28 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
-    <div class="bento-cell span-2">
-        <h4>Sleep & stress this week</h4>
+    <div class="bento-cell span-2 anim-in">
+        <h4>Sleep, stress &amp; mood — <?= strtolower($range_labels[$range]) ?></h4>
         <div class="tracker-row">
             <span>😴 Avg. sleep</span>
-            <div class="tracker-bar"><span style="width:<?= $avg_sleep ? min(100, ($avg_sleep/9)*100) : 0 ?>%"></span></div>
+            <div class="tracker-bar"><span class="grow-in" style="width:<?= $avg_sleep ? min(100, ($avg_sleep/9)*100) : 0 ?>%"></span></div>
             <strong><?= $avg_sleep ?? '—' ?>h</strong>
         </div>
         <div class="tracker-row">
             <span>😣 High-stress days</span>
-            <div class="tracker-bar"><span style="width:<?= ($high_stress_days/7)*100 ?>%; background:var(--pink-deep);"></span></div>
-            <strong><?= $high_stress_days ?>/7</strong>
+            <div class="tracker-bar"><span class="grow-in" style="width:<?= $days_logged > 0 ? ($high_stress_days/$days_logged)*100 : 0 ?>%; background:var(--pink-deep);"></span></div>
+            <strong><?= $high_stress_days ?>/<?= $days_logged ?></strong>
         </div>
-        <?php if (empty($week_rows)): ?>
-            <p class="empty-state" style="padding:20px 0;"><span class="em-ico">💛</span><br>Check in daily to build your trends.</p>
+        <?php if ($mood_total === 0): ?>
+            <p class="empty-state" style="padding:20px 0;"><span class="em-ico">💛</span><br>Check in to build your trends.</p>
+        <?php else: ?>
+            <?php foreach (MOOD_META as $key => $m): $mc = $mood_counts[$key] ?? 0; if ($mc === 0) continue; $mp = round(($mc / $mood_total) * 100); ?>
+            <div class="tracker-row">
+                <span><?= $m['emoji'] ?> <?= $m['label'] ?></span>
+                <div class="tracker-bar"><span class="grow-in" style="width:<?= $mp ?>%; background:<?= $m['color'] ?>;"></span></div>
+                <strong><?= $mp ?>%</strong>
+            </div>
+            <?php endforeach; ?>
         <?php endif; ?>
     </div>
 </div>

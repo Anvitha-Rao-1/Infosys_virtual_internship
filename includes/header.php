@@ -25,22 +25,25 @@ $level_info = isset($user['id']) ? user_level_info($pdo, $user['id']) : null;
             <a href="dashboard.php" class="<?= $active === 'dashboard' ? 'active' : '' ?>">
                 <span class="nav-ico">⌂</span> Dashboard
             </a>
-            <div class="nav-label">Categories</div>
-            <a href="academic.php" class="<?= $active === 'academic' ? 'active' : '' ?>"><span class="nav-ico">🎓</span> Academic</a>
-            <a href="study.php" class="<?= $active === 'study' ? 'active' : '' ?>"><span class="nav-ico">📚</span> Study Habits</a>
-            <a href="habits.php" class="<?= $active === 'habits' ? 'active' : '' ?>"><span class="nav-ico">🌱</span> Personal Habits</a>
-            <a href="fitness.php" class="<?= $active === 'fitness' ? 'active' : '' ?>"><span class="nav-ico">💪</span> Health & Fitness</a>
-            <a href="work.php" class="<?= $active === 'work' ? 'active' : '' ?>"><span class="nav-ico">🗂️</span> Work</a>
-            <div class="nav-label">Finance</div>
+            <div class="nav-label">Track</div>
+            <a href="activity.php" class="<?= $active === 'activity' ? 'active' : '' ?>"><span class="nav-ico">📋</span> Activity Tracker</a>
+            <a href="habit_tracker.php" class="<?= $active === 'habit_tracker' ? 'active' : '' ?>"><span class="nav-ico">🌱</span> Habit Tracker</a>
+            <a href="mood.php" class="<?= $active === 'mood' ? 'active' : '' ?>"><span class="nav-ico">💛</span> Mood Tracker</a>
+            <a href="focus.php" class="<?= $active === 'focus' ? 'active' : '' ?>"><span class="nav-ico">⏱️</span> Focus Sessions</a>
+            <a href="goals.php" class="<?= $active === 'goals' ? 'active' : '' ?>"><span class="nav-ico">🎯</span> Goals</a>
+            <div class="nav-label">Analyze</div>
+            <a href="productivity.php" class="<?= $active === 'productivity' ? 'active' : '' ?>"><span class="nav-ico">📈</span> Productivity Analysis</a>
+            <a href="analytics.php" class="<?= $active === 'analytics' ? 'active' : '' ?>"><span class="nav-ico">📊</span> Insights & Reports</a>
             <a href="finance.php" class="<?= $active === 'finance' ? 'active' : '' ?>"><span class="nav-ico">💰</span> Finance</a>
             <a href="forecast.php" class="<?= $active === 'forecast' ? 'active' : '' ?>"><span class="nav-ico">🔮</span> Forecast</a>
-            <div class="nav-label">Wellness & Growth</div>
-            <a href="mood.php" class="<?= $active === 'mood' ? 'active' : '' ?>"><span class="nav-ico">💛</span> Mood Tracking</a>
-            <a href="analytics.php" class="<?= $active === 'analytics' ? 'active' : '' ?>"><span class="nav-ico">📊</span> Analytics</a>
+            <div class="nav-label">Plan</div>
+            <a href="calendar.php" class="<?= $active === 'calendar' ? 'active' : '' ?>"><span class="nav-ico">📅</span> Calendar View</a>
+            <a href="reminders.php" class="<?= $active === 'reminders' ? 'active' : '' ?>"><span class="nav-ico">🔔</span> Reminders</a>
+            <div class="nav-label">More</div>
             <a href="gamification.php" class="<?= $active === 'gamification' ? 'active' : '' ?>"><span class="nav-ico">🏆</span> Rewards</a>
             <a href="coach.php" class="<?= $active === 'coach' ? 'active' : '' ?>"><span class="nav-ico">✨</span> AI Coach</a>
             <div class="nav-label">Account</div>
-            <a href="profile.php" class="<?= $active === 'profile' ? 'active' : '' ?>"><span class="nav-ico">◐</span> My Profile</a>
+            <a href="settings.php" class="<?= $active === 'settings' ? 'active' : '' ?>"><span class="nav-ico">⚙️</span> Settings</a>
             <a href="logout.php"><span class="nav-ico">⏻</span> Log out</a>
         </nav>
     </aside>

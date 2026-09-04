@@ -13,8 +13,13 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(150) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     avatar_color VARCHAR(7) DEFAULT '#6C63A6',
+    birthdate DATE DEFAULT NULL,
+    gender VARCHAR(30) DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+-- Safe to re-run — no-ops if these already exist (added for Settings > Biodata).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS birthdate DATE DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(30) DEFAULT NULL;
 
 -- ---------- Categories (Academic, Study, Habits, Fitness, Work) ----------
 CREATE TABLE IF NOT EXISTS categories (
@@ -44,11 +49,19 @@ CREATE TABLE IF NOT EXISTS goals (
     description VARCHAR(300) DEFAULT '',
     frequency ENUM('daily','weekly') DEFAULT 'daily',
     target_per_week INT DEFAULT 7,
+    est_minutes INT DEFAULT 20,
     is_active TINYINT(1) DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (category_id) REFERENCES categories(id)
 );
+-- Already have this table from before? This adds the one new column safely —
+-- it's a no-op if you re-run it and est_minutes already exists.
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS est_minutes INT DEFAULT 20;
+-- est_minutes = "typical minutes per check-in", set per-goal on the Add Goal
+-- form (defaults to 20). It's a self-reported estimate, not a stopwatch
+-- measurement — it powers the Time Allocation chart and Productivity Score
+-- on the Forecast page (see ml/README_ML.md).
 
 -- ---------- Goal activity log (one row per day a goal is checked in) ----------
 CREATE TABLE IF NOT EXISTS goal_logs (
@@ -120,6 +133,36 @@ CREATE TABLE IF NOT EXISTS transactions (
     note VARCHAR(200) DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ---------- Focus sessions (Focus Sessions tab: real timer + log) ----------
+CREATE TABLE IF NOT EXISTS focus_sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    goal_id INT DEFAULT NULL,
+    planned_minutes INT NOT NULL,
+    actual_minutes INT NOT NULL,
+    status ENUM('completed','interrupted') DEFAULT 'completed',
+    started_at DATETIME NOT NULL,
+    ended_at DATETIME DEFAULT NULL,
+    note VARCHAR(200) DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL
+);
+
+-- ---------- Reminders: in-app only (no email/push sending is wired up) ----------
+CREATE TABLE IF NOT EXISTS reminders (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    goal_id INT DEFAULT NULL,
+    title VARCHAR(150) NOT NULL,
+    remind_time TIME NOT NULL,
+    days_of_week VARCHAR(40) DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
+    is_active TINYINT(1) DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL
 );
 
 -- ---------- Forecast cache: latest ML output per user, per domain ----------

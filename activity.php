@@ -4,39 +4,44 @@ require_once __DIR__ . '/includes/helpers.php';
 require_login();
 $user = current_user();
 $uid = $user['id'];
+$page_title = 'Activity Tracker';
+$active = 'activity';
 
-$slug = $_GET['cat'] ?? '';
-$category = get_category($pdo, $slug);
-if (!$category) { header('Location: dashboard.php'); exit; }
+$categories = get_all_categories($pdo);
+$filter = $_GET['cat'] ?? 'all';
 
-$page_title = $category['name'];
-$active = $slug;
-
-// Handle "add goal" form submission
+// Handle "add goal" form submission (quick-add while checking in)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_goal'])) {
     $title = trim($_POST['title'] ?? '');
     $desc  = trim($_POST['description'] ?? '');
+    $cat_id = (int)($_POST['category_id'] ?? 0);
     $freq  = ($_POST['frequency'] ?? 'daily') === 'weekly' ? 'weekly' : 'daily';
     $target = max(1, min(7, (int)($_POST['target_per_week'] ?? 7)));
     $est_minutes = max(1, min(240, (int)($_POST['est_minutes'] ?? 20)));
-    if ($title !== '') {
+    if ($title !== '' && $cat_id > 0) {
         $stmt = $pdo->prepare("INSERT INTO goals (user_id, category_id, title, description, frequency, target_per_week, est_minutes) VALUES (?,?,?,?,?,?,?)");
-        $stmt->execute([$uid, $category['id'], $title, $desc, $freq, $target, $est_minutes]);
+        $stmt->execute([$uid, $cat_id, $title, $desc, $freq, $target, $est_minutes]);
     }
-    header('Location: ' . $slug . '.php?added=1');
+    header('Location: activity.php?cat=' . urlencode($filter) . '&added=1');
     exit;
 }
 
-// Handle delete
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_goal'])) {
     $stmt = $pdo->prepare("DELETE FROM goals WHERE id=? AND user_id=?");
     $stmt->execute([(int)$_POST['goal_id'], $uid]);
-    header('Location: ' . $slug . '.php');
+    header('Location: activity.php?cat=' . urlencode($filter));
     exit;
 }
 
-$stmt = $pdo->prepare("SELECT * FROM goals WHERE user_id=? AND category_id=? AND is_active=1 ORDER BY created_at DESC");
-$stmt->execute([$uid, $category['id']]);
+$query = "SELECT g.*, c.slug AS cat_slug, c.name AS cat_name FROM goals g JOIN categories c ON c.id=g.category_id WHERE g.user_id=? AND g.is_active=1";
+$params = [$uid];
+if ($filter !== 'all') {
+    $query .= " AND c.slug=?";
+    $params[] = $filter;
+}
+$query .= " ORDER BY g.created_at DESC";
+$stmt = $pdo->prepare($query);
+$stmt->execute($params);
 $goals = $stmt->fetchAll();
 
 $dates = week_dates();
@@ -45,6 +50,8 @@ $today_str = date('Y-m-d');
 
 require_once __DIR__ . '/includes/header.php';
 ?>
+
+<?php if (isset($_GET['added'])): ?><div class="alert alert-success">Goal added 🌱</div><?php endif; ?>
 
 <div class="day-strip">
     <?php foreach ($dates as $i => $d):
@@ -59,14 +66,21 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <div class="section-title">
-    <h2><?= $category['icon'] ?> <?= htmlspecialchars($category['name']) ?> goals</h2>
+    <h2>📋 Activity Tracker</h2>
     <button class="btn btn-violet btn-sm" onclick="document.getElementById('addGoalModal').classList.add('show')">+ Add goal</button>
+</div>
+
+<div class="seg-tabs" style="flex-wrap:wrap; height:auto;">
+    <button class="<?= $filter === 'all' ? 'active' : '' ?>" onclick="location.href='activity.php?cat=all'">All</button>
+    <?php foreach ($categories as $c): ?>
+    <button class="<?= $filter === $c['slug'] ? 'active' : '' ?>" onclick="location.href='activity.php?cat=<?= $c['slug'] ?>'"><?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?></button>
+    <?php endforeach; ?>
 </div>
 
 <?php if (empty($goals)): ?>
     <div class="card empty-state">
-        <div class="em-ico"><?= $category['icon'] ?></div>
-        <p>No <?= htmlspecialchars(strtolower($category['name'])) ?> goals yet. Add one to start tracking your streak.</p>
+        <div class="em-ico">📋</div>
+        <p>No goals in this view yet. Add one to start tracking your streak.</p>
     </div>
 <?php else: ?>
 <div class="goal-list">
@@ -88,6 +102,7 @@ require_once __DIR__ . '/includes/header.php';
         <div class="goal-info">
             <h3><?= htmlspecialchars($g['title']) ?></h3>
             <p><?= htmlspecialchars($g['description'] ?: ucfirst($g['frequency']) . ' goal') ?></p>
+            <span class="goal-tag"><?= htmlspecialchars($g['cat_name']) ?></span>
         </div>
         <div class="week-check">
             <?php foreach ($dates as $i => $d):
@@ -114,7 +129,7 @@ require_once __DIR__ . '/includes/header.php';
 <!-- Add Goal Modal -->
 <div class="modal-overlay" id="addGoalModal">
     <div class="modal-box">
-        <h3>New <?= htmlspecialchars($category['name']) ?> goal</h3>
+        <h3>New goal</h3>
         <form method="POST">
             <div class="field">
                 <label>Goal title</label>
@@ -123,6 +138,14 @@ require_once __DIR__ . '/includes/header.php';
             <div class="field">
                 <label>Description (optional)</label>
                 <input type="text" name="description" placeholder="Any notes about this goal">
+            </div>
+            <div class="field">
+                <label>Category</label>
+                <select name="category_id" required>
+                    <?php foreach ($categories as $c): ?>
+                    <option value="<?= $c['id'] ?>" <?= $filter === $c['slug'] ? 'selected' : '' ?>><?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
             </div>
             <div class="form-row">
                 <div class="field">
@@ -138,9 +161,7 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
             <div class="field">
-                <label>Typical time per check-in, in minutes
-                    <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">A rough estimate — powers the Productivity Score and Time Allocation chart on the Forecast page. Nothing is measured with a stopwatch, so keep it realistic.</span></span>
-                </label>
+                <label>Typical time per check-in (minutes)</label>
                 <input type="number" name="est_minutes" min="1" max="240" value="20">
             </div>
             <div class="modal-close-row">

@@ -276,3 +276,592 @@ function svg_line_chart($labels, $series, $width = 640, $height = 200) {
 
     return $svg . $legend;
 }
+
+/* ============================================================
+   Productivity & Habit analysis engine (Milestone 2)
+   Rule-based, live-computed analytics — the same explainable-logic
+   philosophy as coach.php. The *trend forecast* built on top of this
+   (next week's completion % / productivity score) lives in
+   ml/train_model.py and is read back via get_forecast() above.
+   ============================================================ */
+
+// Minutes invested per category over the last $days days: each goal's
+// own est_minutes (set on the Add Goal form) × check-ins logged, PLUS any
+// real Focus Session minutes logged against a goal in that category.
+// Focus Sessions with no linked goal are returned separately as
+// "unassigned_minutes" (shown as a "Deep Work" slice by the caller).
+// This is a mix of self-reported estimate and real timer data — the
+// Time Allocation chart says so via its info tooltip.
+function category_time_allocation($pdo, $uid, $days = 7) {
+    $stmt = $pdo->prepare(
+        "SELECT c.name, c.color, SUM(combined.minutes) AS minutes FROM (
+            SELECT g.category_id, g.est_minutes AS minutes FROM goal_logs gl
+                JOIN goals g ON g.id = gl.goal_id
+                WHERE g.user_id = ? AND gl.status = 'done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+            UNION ALL
+            SELECT g.category_id, fs.actual_minutes AS minutes FROM focus_sessions fs
+                JOIN goals g ON g.id = fs.goal_id
+                WHERE fs.user_id = ? AND fs.goal_id IS NOT NULL AND fs.started_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+         ) combined
+         JOIN categories c ON c.id = combined.category_id
+         GROUP BY c.id, c.name, c.color
+         HAVING minutes > 0
+         ORDER BY minutes DESC"
+    );
+    $stmt->execute([$uid, $days - 1, $uid, $days]);
+    $rows = $stmt->fetchAll();
+
+    $stmt2 = $pdo->prepare(
+        "SELECT COALESCE(SUM(actual_minutes),0) m FROM focus_sessions
+         WHERE user_id = ? AND goal_id IS NULL AND started_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"
+    );
+    $stmt2->execute([$uid, $days]);
+    $unassigned = (int)$stmt2->fetch()['m'];
+
+    return ['categories' => $rows, 'unassigned_minutes' => $unassigned];
+}
+
+// The single active goal with the longest current streak — used for the
+// "Best streak" KPI card on the Productivity & Habits tab.
+function overall_best_streak($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT id, title FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $best = 0; $best_title = null;
+    foreach ($stmt->fetchAll() as $g) {
+        $s = current_streak($pdo, $g['id']);
+        if ($s > $best) { $best = $s; $best_title = $g['title']; }
+    }
+    return ['days' => $best, 'title' => $best_title];
+}
+
+// Per-goal snapshot (this week's % + current streak) for the Habit
+// Overview list on the Forecast page.
+function active_goals_with_progress($pdo, $uid, $limit = 8) {
+    $stmt = $pdo->prepare(
+        "SELECT g.id, g.title, g.est_minutes, c.name AS category_name
+         FROM goals g JOIN categories c ON c.id = g.category_id
+         WHERE g.user_id = ? AND g.is_active = 1 ORDER BY g.created_at DESC LIMIT ?"
+    );
+    $stmt->bindValue(1, $uid, PDO::PARAM_INT);
+    $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    $out = [];
+    foreach ($stmt->fetchAll() as $g) {
+        $out[] = [
+            'id' => (int)$g['id'],
+            'title' => $g['title'],
+            'category' => $g['category_name'],
+            'pct' => week_percent($pdo, $g['id']),
+            'streak' => current_streak($pdo, $g['id']),
+            'est_minutes' => (int)$g['est_minutes'],
+        ];
+    }
+    return $out;
+}
+
+// This week's strongest- and weakest-performing category by completion
+// rate (same logic analytics.php uses), reused here for Forecast insights.
+function best_worst_category_week($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT c.name, c.id, COUNT(g.id) goal_count,
+            (SELECT COUNT(*) FROM goal_logs gl JOIN goals g2 ON g2.id=gl.goal_id
+             WHERE g2.category_id=c.id AND g2.user_id=? AND gl.status='done'
+             AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)) as done_week
+         FROM categories c LEFT JOIN goals g ON g.category_id=c.id AND g.user_id=? AND g.is_active=1
+         GROUP BY c.id HAVING goal_count > 0"
+    );
+    $stmt->execute([$uid, $uid]);
+    $best = null; $worst = null;
+    foreach ($stmt->fetchAll() as $r) {
+        $rate = ($r['goal_count'] * 7) > 0 ? $r['done_week'] / ($r['goal_count'] * 7) : 0;
+        $r['rate'] = $rate;
+        if ($best === null || $rate > $best['rate']) $best = $r;
+        if ($worst === null || $rate < $worst['rate']) $worst = $r;
+    }
+    return [$best, $worst];
+}
+
+/* ============================================================
+   Focus Sessions (real timer + log — feeds Productivity Analysis)
+   ============================================================ */
+
+// Aggregate stats over the last $days days: session count, total minutes,
+// average minutes per session, and success rate (% completed vs interrupted).
+function focus_session_stats($pdo, $uid, $days = 7) {
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) n, COALESCE(SUM(actual_minutes),0) total_minutes,
+                COALESCE(AVG(actual_minutes),0) avg_minutes,
+                SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed_n
+         FROM focus_sessions WHERE user_id=? AND started_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"
+    );
+    $stmt->execute([$uid, $days]);
+    $r = $stmt->fetch();
+    $n = (int)$r['n'];
+    return [
+        'sessions' => $n,
+        'total_minutes' => (int)$r['total_minutes'],
+        'avg_minutes' => $n > 0 ? round((float)$r['avg_minutes'], 1) : 0,
+        'success_rate' => $n > 0 ? round(($r['completed_n'] / $n) * 100) : 0,
+    ];
+}
+
+// Most recent sessions, newest first, with the linked goal's title (if any).
+function recent_focus_sessions($pdo, $uid, $limit = 6) {
+    $stmt = $pdo->prepare(
+        "SELECT fs.*, g.title AS goal_title FROM focus_sessions fs
+         LEFT JOIN goals g ON g.id = fs.goal_id
+         WHERE fs.user_id=? ORDER BY fs.started_at DESC LIMIT ?"
+    );
+    $stmt->bindValue(1, $uid, PDO::PARAM_INT);
+    $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    return $stmt->fetchAll();
+}
+
+/* ============================================================
+   Habit Score, Tasks Completed, Weekly Goal Progress
+   (live KPIs for Productivity Analysis — see ml/train_model.py for
+   the *forecasted* Productivity Score, which is a different number)
+   ============================================================ */
+
+// A 4-week rolling average completion rate — "how consistent have you
+// been lately", distinct from the forecasted Productivity Score (which
+// also factors in estimated/real time invested).
+function habit_score($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $n_goals = (int)$stmt->fetch()['c'];
+    if ($n_goals === 0) return null;
+
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 27 DAY)"
+    );
+    $stmt->execute([$uid]);
+    $done = (int)$stmt->fetch()['c'];
+    $possible = $n_goals * 28;
+    return $possible > 0 ? min(100, round(($done / $possible) * 100)) : 0;
+}
+
+// [done, total] check-ins for today, across all active goals.
+function tasks_completed_today($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $total = (int)$stmt->fetch()['c'];
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' AND gl.log_date=CURDATE()"
+    );
+    $stmt->execute([$uid]);
+    $done = (int)$stmt->fetch()['c'];
+    return ['done' => $done, 'total' => $total];
+}
+
+// This week's aggregate completion (%) vs a target — the "Weekly Goal
+// Progress" bar. Target defaults to 90%, not 100%, since a single missed
+// check-in across several goals shouldn't read as "failed the week".
+function weekly_goal_progress($pdo, $uid, $target_pct = 90) {
+    $stmt = $pdo->prepare("SELECT id FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $goal_ids = array_column($stmt->fetchAll(), 'id');
+    if (empty($goal_ids)) return ['pct' => 0, 'target' => $target_pct];
+    $possible = count($goal_ids) * 7;
+    $done = 0;
+    foreach ($goal_ids as $gid) $done += count(week_logs($pdo, $gid));
+    $pct = $possible > 0 ? round(($done / $possible) * 100) : 0;
+    return ['pct' => $pct, 'target' => $target_pct];
+}
+
+/* ============================================================
+   Reminders — in-app only, no email/push sending is wired up.
+   Shown on the Reminders page and as a "Today" list on the Dashboard.
+   ============================================================ */
+
+function reminders_for_today($pdo, $uid) {
+    $today_abbr = date('D'); // "Mon", "Tue", ...
+    $stmt = $pdo->prepare(
+        "SELECT r.*, g.title AS goal_title FROM reminders r LEFT JOIN goals g ON g.id = r.goal_id
+         WHERE r.user_id=? AND r.is_active=1 ORDER BY r.remind_time"
+    );
+    $stmt->execute([$uid]);
+    $today_list = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $days = array_map('trim', explode(',', $r['days_of_week']));
+        if (in_array($today_abbr, $days, true)) $today_list[] = $r;
+    }
+    return $today_list;
+}
+
+function all_reminders($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT r.*, g.title AS goal_title FROM reminders r LEFT JOIN goals g ON g.id = r.goal_id
+         WHERE r.user_id=? ORDER BY r.remind_time"
+    );
+    $stmt->execute([$uid]);
+    return $stmt->fetchAll();
+}
+
+/* ============================================================
+   Calendar View — per-day check-in intensity + mood, for one month
+   ============================================================ */
+
+function month_calendar_data($pdo, $uid, $year, $month) {
+    $start = sprintf('%04d-%02d-01', $year, $month);
+    $days_in_month = (int)date('t', strtotime($start));
+    $end = sprintf('%04d-%02d-%02d', $year, $month, $days_in_month);
+
+    $stmt = $pdo->prepare(
+        "SELECT gl.log_date, COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' AND gl.log_date BETWEEN ? AND ?
+         GROUP BY gl.log_date"
+    );
+    $stmt->execute([$uid, $start, $end]);
+    $checkins_by_date = [];
+    foreach ($stmt->fetchAll() as $r) $checkins_by_date[$r['log_date']] = (int)$r['c'];
+
+    $stmt = $pdo->prepare("SELECT log_date, mood FROM mood_logs WHERE user_id=? AND log_date BETWEEN ? AND ?");
+    $stmt->execute([$uid, $start, $end]);
+    $mood_by_date = [];
+    foreach ($stmt->fetchAll() as $r) $mood_by_date[$r['log_date']] = $r['mood'];
+
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $active_goals = (int)$stmt->fetch()['c'];
+
+    return [
+        'days_in_month' => $days_in_month,
+        'checkins_by_date' => $checkins_by_date,
+        'mood_by_date' => $mood_by_date,
+        'active_goals' => $active_goals,
+    ];
+}
+
+// The weekday (all-time) with the most logged check-ins — same query
+// analytics.php uses, reused here for the Productivity & Habits insights.
+function best_weekday($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT DAYNAME(gl.log_date) dname, COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' GROUP BY DAYOFWEEK(gl.log_date), dname ORDER BY c DESC LIMIT 1"
+    );
+    $stmt->execute([$uid]);
+    return $stmt->fetch();
+}
+
+/* ============================================================
+   Phase 3 additions — extra graphs for Dashboard, Insights &
+   Reports, and Finance: live PHP/SQL, no retraining needed.
+   ============================================================ */
+
+// This week's check-ins per day (Mon-Sun), for a simple bar chart —
+// same shape analytics.php has used since Phase 2, centralised here so
+// the Dashboard can show the same chart without duplicating the query.
+function weekly_checkin_bars($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $active_goal_count = (int)$stmt->fetch()['c'];
+
+    $dates = week_dates();
+    $stmt = $pdo->prepare("SELECT gl.log_date, COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+        WHERE g.user_id=? AND gl.status='done' AND gl.log_date BETWEEN ? AND ? GROUP BY gl.log_date");
+    $stmt->execute([$uid, $dates[0], end($dates)]);
+    $by_date = [];
+    foreach ($stmt->fetchAll() as $r) $by_date[$r['log_date']] = (int)$r['c'];
+
+    $bars = [];
+    foreach ($dates as $d) {
+        $dt = new DateTime($d);
+        $bars[] = ['label' => $dt->format('D'), 'count' => $by_date[$d] ?? 0, 'max' => max(1, $active_goal_count)];
+    }
+    return $bars;
+}
+
+// Weekly-average wellness score (mood + sleep + stress blend, same
+// formula as wellness_score()) over the last N weeks — for a mood/
+// wellness trend line chart. Weeks with no mood logs are skipped so
+// the line only draws where there's real data.
+function wellness_score_weekly($pdo, $uid, $weeks = 8) {
+    $stmt = $pdo->prepare("SELECT log_date, mood, sleep_hours, stress_level FROM mood_logs
+        WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ORDER BY log_date");
+    $stmt->execute([$uid, $weeks * 7 - 1]);
+    $rows = $stmt->fetchAll();
+    if (empty($rows)) return ['labels' => [], 'scores' => []];
+
+    $buckets = [];
+    foreach ($rows as $r) {
+        $wk = (new DateTime($r['log_date']))->format('o-\WW'); // ISO year-week
+        $buckets[$wk][] = $r;
+    }
+    ksort($buckets);
+
+    $labels = []; $scores = []; $i = 1;
+    foreach ($buckets as $wk => $wrows) {
+        $mood_avg = 0; $sleep_avg = 0; $sleep_n = 0; $stress_penalty = 0;
+        foreach ($wrows as $r) {
+            $mood_avg += MOOD_META[$r['mood']]['score'];
+            if ($r['sleep_hours'] !== null) { $sleep_avg += (float)$r['sleep_hours']; $sleep_n++; }
+            if ($r['stress_level'] === 'high') $stress_penalty += 2;
+            elseif ($r['stress_level'] === 'medium') $stress_penalty += 1;
+        }
+        $mood_avg /= count($wrows);
+        $sleep_avg = $sleep_n > 0 ? $sleep_avg / $sleep_n : 7;
+        $score = ($mood_avg / 5) * 60 + min($sleep_avg / 8, 1) * 30 + max(0, 10 - $stress_penalty);
+        $labels[] = 'Wk ' . $i;
+        $scores[] = round($score);
+        $i++;
+    }
+    return ['labels' => $labels, 'scores' => $scores];
+}
+
+// Live month-by-month income/expense totals straight from the
+// transactions table — no Python/ML dependency, always fresh. Used for
+// the Finance page's history chart, the Dashboard finance snapshot, and
+// the Insights & Reports financial summary.
+function monthly_transaction_totals($pdo, $uid, $months = 6) {
+    $stmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(txn_date, '%Y-%m') ym, type, COALESCE(SUM(amount),0) total
+         FROM transactions WHERE user_id=? AND txn_date >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+         GROUP BY ym, type ORDER BY ym"
+    );
+    $stmt->execute([$uid, $months]);
+    $by_month = [];
+    foreach ($stmt->fetchAll() as $r) {
+        if (!isset($by_month[$r['ym']])) $by_month[$r['ym']] = ['income' => 0.0, 'expense' => 0.0];
+        $by_month[$r['ym']][$r['type']] = (float)$r['total'];
+    }
+    ksort($by_month);
+    $labels = array_keys($by_month);
+    $income = array_map(fn($m) => $m['income'], $by_month);
+    $expense = array_map(fn($m) => $m['expense'], $by_month);
+    return ['months' => $labels, 'income' => array_values($income), 'expense' => array_values($expense)];
+}
+
+// Truncates a label for tight chart space — plain substr (no mbstring
+// dependency, since not every XAMPP install has it enabled) which is
+// fine here since category/habit names in this app are short and plain.
+function short_label($s, $len = 12) {
+    return strlen($s) > $len ? substr($s, 0, $len - 1) . '…' : $s;
+}
+
+// This week's completion % for every category that has at least one
+// active goal — the full comparison behind analytics.php's best/worst
+// callouts, now also drawable as its own bar chart.
+function category_completion_this_week($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT c.id, c.name, c.color, COUNT(g.id) goal_count,
+            (SELECT COUNT(*) FROM goal_logs gl JOIN goals g2 ON g2.id=gl.goal_id
+             WHERE g2.category_id=c.id AND g2.user_id=? AND gl.status='done'
+             AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)) as done_week
+         FROM categories c JOIN goals g ON g.category_id=c.id AND g.user_id=? AND g.is_active=1
+         GROUP BY c.id, c.name, c.color HAVING goal_count > 0"
+    );
+    $stmt->execute([$uid, $uid]);
+    $rows = $stmt->fetchAll();
+    foreach ($rows as &$r) {
+        $possible = $r['goal_count'] * 7;
+        $r['rate_pct'] = $possible > 0 ? round(($r['done_week'] / $possible) * 100) : 0;
+    }
+    unset($r);
+    usort($rows, fn($a, $b) => $b['rate_pct'] <=> $a['rate_pct']);
+    return $rows;
+}
+
+// Draws a donut/ring chart. $segments = ['Label' => ['value'=>float,'color'=>'#hex'], ...]
+// Returns ['svg'=>..., 'legend'=>['Label'=>['pct'=>.., 'value'=>.., 'color'=>..]], 'total'=>..]
+// so the caller can render an SVG ring plus a matching text legend beside it.
+function svg_donut_chart($segments, $size = 168, $stroke_width = 24) {
+    $total = array_sum(array_column($segments, 'value'));
+    if ($total <= 0) {
+        return ['svg' => '', 'legend' => [], 'total' => 0];
+    }
+    $r = ($size - $stroke_width) / 2;
+    $circumference = 2 * M_PI * $r;
+    $c = $size / 2;
+
+    $svg = "<svg class=\"donut-ring\" width=\"$size\" height=\"$size\" viewBox=\"0 0 $size $size\" style=\"transform:rotate(-90deg);\">";
+    $svg .= "<circle cx=\"$c\" cy=\"$c\" r=\"$r\" fill=\"none\" stroke=\"var(--lightgray)\" stroke-width=\"$stroke_width\"/>";
+
+    $offset_acc = 0.0;
+    $legend = [];
+    foreach ($segments as $name => $seg) {
+        $pct = $seg['value'] / $total;
+        $dash = max(0, $pct * $circumference - 1.5); // 1.5px gap so slices are visually distinct
+        $gap = $circumference - $dash;
+        $dashoffset = -$offset_acc * $circumference;
+        $svg .= "<circle cx=\"$c\" cy=\"$c\" r=\"$r\" fill=\"none\" stroke=\"{$seg['color']}\" stroke-width=\"$stroke_width\" "
+              . "stroke-dasharray=\"$dash $gap\" stroke-dashoffset=\"$dashoffset\" stroke-linecap=\"round\"/>";
+        $offset_acc += $pct;
+        $legend[$name] = ['pct' => round($pct * 100), 'value' => $seg['value'], 'color' => $seg['color']];
+    }
+    $svg .= '</svg>';
+    return ['svg' => $svg, 'legend' => $legend, 'total' => $total];
+}
+
+/* ============================================================
+   Phase 3, round 2 — "vs last week" trend deltas and per-weekday
+   productivity scoring, to match the reference dashboard mockup's
+   KPI trend indicators and Top/Least Productive Day cards.
+   ============================================================ */
+
+// Same rolling-consistency formula as habit_score(), but the 28-day
+// window is shifted back 7 days — i.e. "what was your habit score as
+// of last week" — so the two numbers are directly comparable.
+function habit_score_prev_week($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $n_goals = (int)$stmt->fetch()['c'];
+    if ($n_goals === 0) return null;
+
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done'
+         AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 34 DAY)
+         AND gl.log_date < DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+    );
+    $stmt->execute([$uid]);
+    $done = (int)$stmt->fetch()['c'];
+    $possible = $n_goals * 28;
+    return $possible > 0 ? min(100, round(($done / $possible) * 100)) : 0;
+}
+
+// Total focus-session minutes logged 8-14 days ago — the week before
+// focus_session_stats($pdo, $uid, 7)'s current window — for the Focus
+// Time KPI's "vs last week" delta.
+function focus_minutes_prev_week($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT COALESCE(SUM(actual_minutes),0) m FROM focus_sessions
+         WHERE user_id=? AND started_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+         AND started_at < DATE_SUB(NOW(), INTERVAL 7 DAY)"
+    );
+    $stmt->execute([$uid]);
+    return (int)$stmt->fetch()['m'];
+}
+
+// How many check-ins were completed on the given calendar date — used
+// to compare "tasks completed today" against the same weekday last
+// week (a fairer comparison than yesterday, since weekly routines
+// often differ by day-of-week).
+function tasks_completed_on($pdo, $uid, $date) {
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' AND gl.log_date=?"
+    );
+    $stmt->execute([$uid, $date]);
+    return (int)$stmt->fetch()['c'];
+}
+
+// Builds a small "+12% vs last week" / "−4% vs last week" style badge
+// from a current and previous value. Returns null when there's nothing
+// meaningful to compare against (no previous data), so callers can
+// simply skip rendering the badge.
+function trend_delta($current, $previous, $unit = '%') {
+    if ($previous === null || $current === null) return null;
+    if ($previous == 0) {
+        if ($current == 0) return null;
+        return ['dir' => 'up', 'text' => 'new vs last week'];
+    }
+    $pct = round((($current - $previous) / $previous) * 100);
+    if ($pct == 0) return ['dir' => 'flat', 'text' => 'same as last week'];
+    $dir = $pct > 0 ? 'up' : 'down';
+    return ['dir' => $dir, 'text' => ($pct > 0 ? '+' : '') . $pct . '% vs last week'];
+}
+
+// Builds a small "+2 vs last Tue" style badge from a whole-number
+// difference (used for Tasks Completed Today, where a percentage would
+// be misleading on small counts like 1 vs 2).
+function trend_delta_count($current, $previous, $day_label) {
+    $diff = $current - $previous;
+    if ($diff == 0) return ['dir' => 'flat', 'text' => "same as last $day_label"];
+    $dir = $diff > 0 ? 'up' : 'down';
+    return ['dir' => $dir, 'text' => ($diff > 0 ? '+' : '') . $diff . " vs last $day_label"];
+}
+
+// The longest streak any single goal has ever reached, all-time — used
+// as a "personal best" reference point next to the live Current Streak
+// KPI (a true historical streak-on-this-date isn't reconstructible
+// cheaply, so this gives an honest, still-useful comparison instead).
+function all_time_best_streak($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT gl.log_date FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done' GROUP BY gl.log_date ORDER BY gl.log_date"
+    );
+    $stmt->execute([$uid]);
+    $dates = array_column($stmt->fetchAll(), 'log_date');
+    if (empty($dates)) return 0;
+    $best = 1; $run = 1;
+    for ($i = 1; $i < count($dates); $i++) {
+        $prev = new DateTime($dates[$i - 1]);
+        $cur = new DateTime($dates[$i]);
+        $diff = (int)$prev->diff($cur)->days;
+        if ($diff === 1) { $run++; } elseif ($diff > 1) { $run = 1; }
+        if ($run > $best) $best = $run;
+    }
+    return $best;
+}
+
+// Average per-weekday completion score (0-100), across active goals,
+// over the last $weeks weeks — the "Top Productive Day" / "Least
+// Productive Day" mini cards need a comparable numeric score per day,
+// not just a raw all-time check-in count like best_weekday() gives.
+// Returns rows sorted best-first: [['dname'=>'Wednesday','score'=>88,'n'=>...], ...]
+// Days with zero possible check-ins (no active goals existed / no data
+// yet) are omitted so an untouched day doesn't wrongly show as "worst".
+function weekday_productivity_scores($pdo, $uid, $weeks = 8) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $n_goals = (int)$stmt->fetch()['c'];
+    if ($n_goals === 0) return [];
+
+    $stmt = $pdo->prepare(
+        "SELECT DAYOFWEEK(gl.log_date) dow, DAYNAME(gl.log_date) dname, COUNT(*) c
+         FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+         WHERE g.user_id=? AND gl.status='done'
+         AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         GROUP BY dow, dname"
+    );
+    $stmt->execute([$uid, $weeks * 7 - 1]);
+    $by_dow = [];
+    foreach ($stmt->fetchAll() as $r) $by_dow[(int)$r['dow']] = ['dname' => $r['dname'], 'c' => (int)$r['c']];
+
+    // How many of each weekday have actually occurred in the window
+    // (so a partial final week doesn't over- or under-count possible
+    // check-ins for that weekday).
+    $occurrences = array_fill(1, 7, 0);
+    $cursor = new DateTime('-' . ($weeks * 7 - 1) . ' days');
+    for ($i = 0; $i < $weeks * 7; $i++) {
+        $occurrences[(int)$cursor->format('N') % 7 + 1]++; // DAYOFWEEK: 1=Sun..7=Sat
+        $cursor->modify('+1 day');
+    }
+
+    $rows = [];
+    foreach ($by_dow as $dow => $info) {
+        $possible = $occurrences[$dow] * $n_goals;
+        if ($possible <= 0) continue;
+        $rows[] = [
+            'dname' => $info['dname'],
+            'score' => min(100, round(($info['c'] / $possible) * 100)),
+            'n' => $info['c'],
+        ];
+    }
+    usort($rows, fn($a, $b) => $b['score'] <=> $a['score']);
+    return $rows;
+}
+
+// A small static, rotating "quote of the day" widget — plain text,
+// no external API — picked deterministically from today's date so it
+// changes daily but stays stable across page loads on the same day.
+function daily_quote() {
+    $quotes = [
+        ['text' => "Small daily improvements are the key to staggering long-term results.", 'author' => 'James Clear'],
+        ['text' => "You do not rise to the level of your goals, you fall to the level of your systems.", 'author' => 'James Clear'],
+        ['text' => "Discipline is choosing between what you want now and what you want most.", 'author' => 'Abraham Lincoln'],
+        ['text' => "Motivation gets you going, but discipline keeps you growing.", 'author' => 'John C. Maxwell'],
+        ['text' => "We are what we repeatedly do. Excellence, then, is not an act, but a habit.", 'author' => 'Will Durant'],
+        ['text' => "The secret of getting ahead is getting started.", 'author' => 'Mark Twain'],
+        ['text' => "Progress, not perfection.", 'author' => 'Unknown'],
+        ['text' => "A year from now you may wish you had started today.", 'author' => 'Karen Lamb'],
+        ['text' => "Consistency is what transforms average into excellence.", 'author' => 'Unknown'],
+        ['text' => "Focus on being productive instead of busy.", 'author' => 'Tim Ferriss'],
+    ];
+    $idx = ((int)date('z')) % count($quotes);
+    return $quotes[$idx];
+}

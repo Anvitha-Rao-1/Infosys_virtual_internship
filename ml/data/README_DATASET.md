@@ -10,7 +10,8 @@ that it's real public data.
 
 ## What's in it
 
-472 rows, January 2023 – June 2025, columns `Date`, `Category`, `Amount`,
+2,378 rows, January 2015 – June 2025 (10.5 years, so the model has plenty
+to backtest against), columns `Date`, `Category`, `Amount`,
 `Income/Expense` — the exact shape `ml/forecasting.py`'s column-detection
 already expects. It was built with a fixed random seed so it's reproducible
 (`np.random.default_rng(7)`), with:
@@ -20,7 +21,7 @@ already expects. It was built with a fixed random seed so it's reproducible
   Gift income clustered around October/November and March (festival /
   New Year season).
 - **Expenses:** fixed monthly Rent, Utilities and Subscriptions, plus
-  14–25 variable transactions a month across Food, Transportation,
+  16–29 variable transactions a month across Food, Transportation,
   Household, Entertainment, Shopping, Health, Education, Travel and Other
   — with Shopping boosted in Oct/Nov and Travel boosted in
   May/June/December, to give the category blend some realistic seasonality
@@ -46,9 +47,9 @@ for a stronger "dataset addition" story in your report):
 ## Regenerating this file
 
 The generator script isn't shipped in the project (it's a one-off), but
-the logic is straightforward to reproduce: for each month from Jan 2023 to
+the logic is straightforward to reproduce: for each month from Jan 2015 to
 now, emit a Salary row plus occasional Freelance/Investment/Gift rows, a
-fixed Rent/Utilities/Subscriptions row each, and 14–25 variable expense
+fixed Rent/Utilities/Subscriptions row each, and 16–29 variable expense
 rows drawn from a category-weighted distribution with seasonal multipliers
 on Shopping and Travel. Ask Claude to regenerate it if you want a fresh
-seed or a longer date range.
+seed, a different row count, or a longer date range.
