@@ -200,3 +200,79 @@ function wellness_score($pdo, $uid) {
     $stress_component = max(0, 10 - $stress_penalty);       // up to 10 pts
     return (int)round($mood_component + $sleep_component + $stress_component);
 }
+
+/* ============================================================
+   Forecast (ML) — reading the cache the Python script writes,
+   and drawing the actual-vs-forecast line charts on forecast.php
+   ============================================================ */
+
+// Returns the decoded payload array for the given forecast type, or null
+// if train_model.py hasn't been run yet for this user.
+function get_forecast($pdo, $uid, $type) {
+    $stmt = $pdo->prepare("SELECT payload, model_used, mae, rmse, generated_at FROM forecast_cache WHERE user_id=? AND forecast_type=?");
+    $stmt->execute([$uid, $type]);
+    $row = $stmt->fetch();
+    if (!$row) return null;
+    $payload = json_decode($row['payload'], true);
+    $payload['_generated_at'] = $row['generated_at'];
+    return $payload;
+}
+
+// Draws a simple actual (solid) -> forecast (dashed) SVG line chart for one
+// or two series. $series = ['Income' => ['actual'=>[...], 'forecast'=>[...], 'color'=>'#..'], ...]
+// All series must share the same $labels (actual months/weeks + forecast months/weeks).
+function svg_line_chart($labels, $series, $width = 640, $height = 200) {
+    $pad_l = 46; $pad_b = 26; $pad_t = 14; $pad_r = 14;
+    $plot_w = $width - $pad_l - $pad_r;
+    $plot_h = $height - $pad_t - $pad_b;
+    $n = count($labels);
+    if ($n < 2) return '<p style="color:var(--ink-soft); font-size:13px;">Not enough data points to chart yet.</p>';
+
+    $all_vals = [0];
+    foreach ($series as $s) { foreach ($s['actual'] as $v) $all_vals[] = $v; foreach ($s['forecast'] as $v) $all_vals[] = $v; }
+    $max_v = max($all_vals) * 1.15 ?: 1;
+
+    $x_for = fn($i) => $pad_l + ($i / ($n - 1)) * $plot_w;
+    $y_for = fn($v) => $pad_t + $plot_h - ($v / $max_v) * $plot_h;
+
+    $svg = "<svg width=\"100%\" height=\"$height\" viewBox=\"0 0 $width $height\" preserveAspectRatio=\"none\" style=\"overflow:visible;\">";
+    // gridlines
+    for ($g = 0; $g <= 3; $g++) {
+        $gy = $pad_t + ($plot_h / 3) * $g;
+        $svg .= "<line x1=\"$pad_l\" y1=\"$gy\" x2=\"" . ($width - $pad_r) . "\" y2=\"$gy\" stroke=\"#EFEFEF\" stroke-width=\"1\"/>";
+    }
+    foreach ($series as $name => $s) {
+        $color = $s['color'];
+        $actual_n = count($s['actual']);
+        // actual (solid)
+        $pts = [];
+        for ($i = 0; $i < $actual_n; $i++) $pts[] = $x_for($i) . ',' . $y_for($s['actual'][$i]);
+        if (count($pts) >= 2) {
+            $svg .= '<polyline points="' . implode(' ', $pts) . '" fill="none" stroke="' . $color . '" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>';
+        }
+        // forecast (dashed) — continues from the last actual point
+        if (!empty($s['forecast'])) {
+            $fpts = [];
+            if ($actual_n > 0) $fpts[] = $x_for($actual_n - 1) . ',' . $y_for($s['actual'][$actual_n - 1]);
+            foreach ($s['forecast'] as $j => $v) $fpts[] = $x_for($actual_n + $j) . ',' . $y_for($v);
+            $svg .= '<polyline points="' . implode(' ', $fpts) . '" fill="none" stroke="' . $color . '" stroke-width="3" stroke-dasharray="6,6" stroke-linecap="round" stroke-linejoin="round"/>';
+        }
+        // dots
+        for ($i = 0; $i < $actual_n; $i++) $svg .= '<circle cx="' . $x_for($i) . '" cy="' . $y_for($s['actual'][$i]) . '" r="4" fill="' . $color . '"/>';
+        foreach ($s['forecast'] as $j => $v) $svg .= '<circle cx="' . $x_for($actual_n + $j) . '" cy="' . $y_for($v) . '" r="4" fill="#fff" stroke="' . $color . '" stroke-width="2"/>';
+    }
+    // x-axis labels (skip some if too many)
+    $step = max(1, (int)ceil($n / 8));
+    for ($i = 0; $i < $n; $i += $step) {
+        $svg .= '<text x="' . $x_for($i) . '" y="' . ($height - 6) . '" font-size="10" fill="#74747A" text-anchor="middle">' . htmlspecialchars($labels[$i]) . '</text>';
+    }
+    $svg .= '</svg>';
+
+    $legend = '<div style="display:flex; gap:16px; margin-top:8px; flex-wrap:wrap;">';
+    foreach ($series as $name => $s) {
+        $legend .= '<span style="font-size:12px; font-weight:700; color:var(--ink-soft);"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' . $s['color'] . ';margin-right:6px;"></span>' . htmlspecialchars($name) . '</span>';
+    }
+    $legend .= '<span style="font-size:11.5px; color:var(--ink-soft); margin-left:auto;">— solid = actual &nbsp; ┄ dashed = forecast</span></div>';
+
+    return $svg . $legend;
+}

@@ -31,6 +31,9 @@ $level_info = isset($user['id']) ? user_level_info($pdo, $user['id']) : null;
             <a href="habits.php" class="<?= $active === 'habits' ? 'active' : '' ?>"><span class="nav-ico">🌱</span> Personal Habits</a>
             <a href="fitness.php" class="<?= $active === 'fitness' ? 'active' : '' ?>"><span class="nav-ico">💪</span> Health & Fitness</a>
             <a href="work.php" class="<?= $active === 'work' ? 'active' : '' ?>"><span class="nav-ico">🗂️</span> Work</a>
+            <div class="nav-label">Finance</div>
+            <a href="finance.php" class="<?= $active === 'finance' ? 'active' : '' ?>"><span class="nav-ico">💰</span> Finance</a>
+            <a href="forecast.php" class="<?= $active === 'forecast' ? 'active' : '' ?>"><span class="nav-ico">🔮</span> Forecast</a>
             <div class="nav-label">Wellness & Growth</div>
             <a href="mood.php" class="<?= $active === 'mood' ? 'active' : '' ?>"><span class="nav-ico">💛</span> Mood Tracking</a>
             <a href="analytics.php" class="<?= $active === 'analytics' ? 'active' : '' ?>"><span class="nav-ico">📊</span> Analytics</a>

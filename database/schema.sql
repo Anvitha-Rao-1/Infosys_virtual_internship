@@ -108,3 +108,32 @@ CREATE TABLE IF NOT EXISTS user_achievements (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (achievement_id) REFERENCES achievements(id) ON DELETE CASCADE
 );
+
+-- ---------- Finance: income & expense transactions ----------
+CREATE TABLE IF NOT EXISTS transactions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    type ENUM('income','expense') NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    txn_date DATE NOT NULL,
+    note VARCHAR(200) DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ---------- Forecast cache: latest ML output per user, per domain ----------
+-- Written by ml/train_model.py, read (never written) by forecast.php.
+-- One row per (user, forecast_type) — retraining overwrites it in place.
+CREATE TABLE IF NOT EXISTS forecast_cache (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    forecast_type ENUM('finance','habit') NOT NULL,
+    payload JSON NOT NULL,
+    model_used VARCHAR(50) DEFAULT NULL,
+    mae DECIMAL(10,2) DEFAULT NULL,
+    rmse DECIMAL(10,2) DEFAULT NULL,
+    generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_user_type (user_id, forecast_type),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);

@@ -153,3 +153,39 @@ The site now goes beyond simple goal tracking:
 If you already have the database set up, just **re-import `database/schema.sql`** in phpMyAdmin — it only creates the new tables (`CREATE TABLE IF NOT EXISTS`) and refreshes category colours; your users, goals, and check-in history are untouched.
 
 XP itself is **not stored anywhere** — it's calculated live every time from `COUNT(check-ins) × 10 + achievement bonuses`, so it can never drift out of sync with your real activity, and levels update instantly as soon as you check in.
+
+## What's new: Finance tracking + ML Forecast
+
+- **finance.php ("Finance")** — log income/expenses by category, see this
+  month's income/expense/savings/savings-rate, and a category spending
+  breakdown.
+- **forecast.php ("Forecast")** — projects next 1-3 months of income,
+  expenses and savings, plus your next week's habit-completion rate,
+  with an actual-vs-forecast chart and a model performance table
+  (MAE/RMSE).
+  > **Important for your Q&A:** this is a real, if intentionally simple,
+  > ML pipeline (`ml/train_model.py`) — **scikit-learn Linear Regression**
+  > and a **Moving Average** model, backtested against your own recent
+  > months to pick whichever predicts better. The finance forecast blends
+  > your own transaction categories with category patterns learned from a
+  > **benchmark personal-finance dataset** (solves the "I just started
+  > tracking, I have no history" cold-start problem — the blend leans
+  > more on your own data every month you log). That benchmark
+  > (`ml/data/finance_benchmark.xlsx`) is **synthetic** — generated to have
+  > a realistic shape, not downloaded from Kaggle — and
+  > `ml/data/README_DATASET.md` says so plainly; swap in a real Kaggle
+  > file any time by following that same doc. The habit forecast uses
+  > only your own check-in history. No external AI API is called — see
+  > `ml/README_ML.md` for the one-time setup and `ml/forecasting.py` for
+  > every formula.
+
+### New database tables (Finance + Forecast)
+
+| Table | Stores |
+|---|---|
+| `transactions` | every income/expense entry: type, category, amount, date, note |
+| `forecast_cache` | the latest forecast JSON per user, written by `ml/train_model.py`, read by `forecast.php` |
+
+Re-import `database/schema.sql` once to create these two tables (same
+safe `CREATE TABLE IF NOT EXISTS` pattern as always), then follow
+`ml/README_ML.md` to generate your first forecast.
