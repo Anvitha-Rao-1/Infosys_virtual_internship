@@ -9,19 +9,10 @@ $active = 'coach';
 $first_name = explode(' ', trim($user['full_name']))[0];
 
 // ---- Goals not yet checked in today (smart reminders) ----
-$today = date('Y-m-d');
-$stmt = $pdo->prepare("SELECT g.*, c.name cat_name, c.slug cat_slug FROM goals g JOIN categories c ON c.id=g.category_id
-    WHERE g.user_id=? AND g.is_active=1 AND g.id NOT IN (SELECT goal_id FROM goal_logs WHERE log_date=? AND status='done')");
-$stmt->execute([$uid, $today]);
-$pending_today = $stmt->fetchAll();
+$pending_today = goals_pending_today($pdo, $uid);
 
 // ---- Streaks close to breaking (had a streak, but not done today) ----
-$at_risk = [];
-foreach ($pending_today as $g) {
-    $s = current_streak($pdo, $g['id']);
-    if ($s >= 3) $at_risk[] = ['goal' => $g, 'streak' => $s];
-}
-usort($at_risk, fn($a,$b) => $b['streak'] <=> $a['streak']);
+$at_risk = streaks_at_risk($pdo, $uid, $pending_today);
 
 // ---- Category with lowest weekly completion (recommendation target) ----
 $stmt = $pdo->prepare("SELECT c.name, c.slug, COUNT(g.id) goal_count,
@@ -36,6 +27,13 @@ foreach ($cats as $c) {
     $c['rate'] = $rate;
     if ($weakest === null || $rate < $weakest['rate']) $weakest = $c;
 }
+
+// ---- Strongest category this week + most consistent weekday all-time
+// (the other half of the "which categories/days am I doing well/badly
+// on" picture — this page is now the one place these sentences live) ----
+$cat_perf = category_completion_this_week($pdo, $uid);
+$best_cat = $cat_perf[0] ?? null;
+$top_day = best_weekday($pdo, $uid);
 
 // ---- Mood vs completion correlation ----
 $stmt = $pdo->prepare("SELECT ml.log_date, ml.mood, (SELECT COUNT(*) FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id WHERE g.user_id=ml.user_id AND gl.log_date=ml.log_date AND gl.status='done') as done_count
@@ -81,7 +79,7 @@ require_once __DIR__ . '/includes/header.php';
         <div class="empty-state"><div class="em-ico">🎉</div><p>You're all caught up for today. Nothing pending!</p></div>
     <?php else: ?>
         <?php foreach ($pending_today as $g): ?>
-        <a href="<?= $g['cat_slug'] ?>.php" class="reminder-chip">⏰ <?= htmlspecialchars($g['title']) ?></a>
+        <a href="habits.php?cat=<?= htmlspecialchars($g['cat_slug']) ?>" class="reminder-chip">⏰ <?= htmlspecialchars($g['title']) ?></a>
         <?php endforeach; ?>
     <?php endif; ?>
 </div>
@@ -95,10 +93,24 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <?php endif; ?>
 
+    <?php if ($best_cat): ?>
+    <div class="insight-card">
+        <div class="ins-ico">🌟</div>
+        <p><strong><?= htmlspecialchars($best_cat['name']) ?></strong> is your strongest category this week at <strong><?= $best_cat['rate_pct'] ?>%</strong> completion.</p>
+    </div>
+    <?php endif; ?>
+
     <?php if ($weakest && $weakest['rate'] < 0.5): ?>
     <div class="insight-card">
         <div class="ins-ico">💡</div>
         <p><strong><?= htmlspecialchars($weakest['name']) ?></strong> is your least consistent category this week (<?= round($weakest['rate']*100) ?>%). Try picking just one small win there today.</p>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($top_day): ?>
+    <div class="insight-card">
+        <div class="ins-ico">📅</div>
+        <p>You're most consistent on <strong><?= htmlspecialchars($top_day['dname']) ?></strong>s (<?= $top_day['c'] ?> check-ins logged all-time).</p>
     </div>
     <?php endif; ?>
 
@@ -116,7 +128,7 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <?php endif; ?>
 
-    <?php if (empty($at_risk) && !$mood_insight && $trend === null && (!$weakest || $weakest['rate'] >= 0.5)): ?>
+    <?php if (empty($at_risk) && !$mood_insight && $trend === null && !$best_cat && !$top_day && (!$weakest || $weakest['rate'] >= 0.5)): ?>
     <div class="empty-state"><div class="em-ico">✨</div><p>Keep checking in daily — insights get sharper the more data you log.</p></div>
     <?php endif; ?>
 </div>

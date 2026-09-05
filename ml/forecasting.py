@@ -10,11 +10,18 @@ download, or the synthetic one bundled at ml/data/finance_benchmark.xlsx —
 see ml/data/README_DATASET.md for how it was generated and how to swap in
 a real Kaggle CSV/XLSX instead).
 
-The methods used are intentionally simple and explainable:
-  - Linear Regression on a month index (captures an overall upward/downward trend)
+The methods used are intentionally simple and explainable — four candidate
+models are backtested per metric and whichever predicted the most recent
+real periods most accurately wins:
+  - Linear Regression on a month/week index (captures an overall trend)
   - Moving Average (captures "recent typical level", ignores trend)
-A backtest picks whichever of the two predicted the most recent real
-months more accurately, per user, per metric (income / expense).
+  - ARIMA(1,1,1) (captures autocorrelation the other two miss)
+  - Holt-Winters exponential smoothing, damped trend (weights recent
+    periods more heavily than a plain average, without a straight line's
+    tendency to overshoot)
+A 95% confidence interval is also derived from each winning model's own
+backtest error, so every forecast line on the UI can be drawn with an
+honest uncertainty band instead of a single falsely-precise number.
 
 No black-box model, no external AI API call — every number on the
 Forecast page can be traced back to a function in this file.
@@ -214,6 +221,61 @@ def forecast_arima(series: pd.Series, periods: int) -> np.ndarray:
         return forecast_moving_average(series, periods)
 
 
+def forecast_holt_winters(series: pd.Series, periods: int) -> np.ndarray:
+    """
+    Holt-Winters double exponential smoothing (statsmodels), with a damped
+    trend — the fourth candidate model alongside Linear Regression, Moving
+    Average and ARIMA. Where a straight Linear Regression line extrapolates
+    a trend forever (and can overshoot badly on a short noisy history),
+    Holt-Winters weights recent observations more heavily and damps the
+    trend as it projects further out, which tends to track real habit/
+    spending data — that rarely moves in a perfectly straight line — more
+    accurately. Needs a little history to fit; falls back to the Moving
+    Average projection on short series or if it fails to converge, same
+    philosophy as forecast_arima() above.
+    """
+    y = series.values.astype(float)
+    if len(y) < 4:
+        return forecast_moving_average(series, periods)
+    try:
+        import warnings as _warnings
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            damped = len(y) >= 6
+            model = ExponentialSmoothing(y, trend="add", damped_trend=damped, seasonal=None)
+            fitted = model.fit(optimized=True)
+            preds = fitted.forecast(periods)
+        preds = np.asarray(preds, dtype=float)
+        if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
+            return forecast_moving_average(series, periods)
+        return np.clip(preds, 0, None)
+    except Exception:
+        return forecast_moving_average(series, periods)
+
+
+def confidence_interval(preds, residual_rmse):
+    """
+    Builds a simple, honest 95% confidence band around a list of point
+    forecasts, widening the further out the prediction reaches. Uses the
+    winning model's own backtest RMSE as its one-step-ahead error scale,
+    then grows the margin by sqrt(step) — the standard random-walk
+    assumption that independent one-step errors compound in variance, not
+    linearly — so next month's number carries a tighter band than the
+    one three months out. Returns (lower, upper) lists the same length as
+    `preds`; both lists are None-filled when there's no RMSE to build a
+    band from (e.g. too little history for a backtest).
+    """
+    if residual_rmse is None:
+        return [None] * len(preds), [None] * len(preds)
+    lower, upper = [], []
+    for i, p in enumerate(preds):
+        margin = 1.96 * residual_rmse * np.sqrt(i + 1)
+        lower.append(round(max(0.0, p - margin), 2))
+        upper.append(round(p + margin, 2))
+    return lower, upper
+
+
 def _rmse(a, b):
     return float(np.sqrt(np.mean((np.array(a) - np.array(b)) ** 2)))
 
@@ -235,19 +297,20 @@ def _mape(a, b):
 def backtest_and_pick_best(series: pd.Series):
     """
     Holds out up to the last 3 months (or fewer if not enough history),
-    re-fits each of THREE candidate models on everything before, and scores
-    them against the real values: Linear Regression, Moving Average, and
-    ARIMA. Returns (best_method_name, best_mae, best_rmse, all_scores) where
-    all_scores = {"linear_trend": {"mae":.., "rmse":.., "mape":..}, ...} —
-    kept for ALL candidates (not just the winner) so the UI can show a
-    transparent side-by-side comparison, not just a single number to trust.
-    Falls back gracefully with tiny histories.
+    re-fits each of FOUR candidate models on everything before, and scores
+    them against the real values: Linear Regression, Moving Average, ARIMA,
+    and Holt-Winters. Returns (best_method_name, best_mae, best_rmse,
+    all_scores) where all_scores = {"linear_trend": {"mae":.., "rmse":..,
+    "mape":..}, ...} — kept for ALL candidates (not just the winner) so the
+    UI can show a transparent side-by-side comparison, not just a single
+    number to trust. Falls back gracefully with tiny histories.
     """
     y = series.values.astype(float)
     if len(y) < 4:
-        # A line fit (or ARIMA) through 2-3 points extrapolates unstably (a
-        # single big swing can send the projection to zero or beyond) —
-        # moving_average is the safe default until there's enough history.
+        # A line fit (or ARIMA/Holt-Winters) through 2-3 points extrapolates
+        # unstably (a single big swing can send the projection to zero or
+        # beyond) — moving_average is the safe default until there's enough
+        # history.
         return ("moving_average", None, None, {})
     n_holdout = min(3, len(y) - 2)
 
@@ -255,6 +318,7 @@ def backtest_and_pick_best(series: pd.Series):
         "linear_trend": lambda train, k: forecast_linear(pd.Series(train), k),
         "moving_average": lambda train, k: forecast_moving_average(pd.Series(train), k),
         "arima": lambda train, k: forecast_arima(pd.Series(train), k),
+        "holt_winters": lambda train, k: forecast_holt_winters(pd.Series(train), k),
     }
     scores = {name: {"actual": [], "pred": []} for name in methods}
 
@@ -282,17 +346,23 @@ def backtest_and_pick_best(series: pd.Series):
 def forecast_series(series: pd.Series, periods: int):
     """
     Picks the best-scoring method via backtest, then forecasts `periods`
-    steps ahead using ALL available history with that method.
-    Returns (predictions: list[float], method_name: str, mae, rmse, all_scores).
+    steps ahead using ALL available history with that method, plus a 95%
+    confidence band built from that method's own backtest RMSE.
+    Returns (predictions: list[float], method_name: str, mae, rmse,
+    all_scores, ci_lower: list[float|None], ci_upper: list[float|None]).
     """
     method_name, mae, rmse, all_scores = backtest_and_pick_best(series)
     if method_name == "moving_average":
         preds = forecast_moving_average(series, periods)
     elif method_name == "arima":
         preds = forecast_arima(series, periods)
+    elif method_name == "holt_winters":
+        preds = forecast_holt_winters(series, periods)
     else:
         preds = forecast_linear(series, periods)
-    return [round(float(p), 2) for p in preds], method_name, mae, rmse, all_scores
+    preds = [round(float(p), 2) for p in preds]
+    ci_lower, ci_upper = confidence_interval(preds, rmse)
+    return preds, method_name, mae, rmse, all_scores, ci_lower, ci_upper
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +377,6 @@ def forecast_weekly_completion(weekly_pct: pd.Series, periods: int = 2):
     """
     if len(weekly_pct) == 0:
         return [], "insufficient_data", None, None
-    preds, method, mae, rmse, _scores = forecast_series(weekly_pct, periods)
+    preds, method, mae, rmse, _scores, _ci_lower, _ci_upper = forecast_series(weekly_pct, periods)
     preds = [max(0.0, min(100.0, p)) for p in preds]
     return preds, method, mae, rmse

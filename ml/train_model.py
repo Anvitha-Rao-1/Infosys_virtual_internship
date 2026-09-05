@@ -66,6 +66,7 @@ from forecasting import (
     forecast_linear,
     forecast_moving_average,
     forecast_arima,
+    forecast_holt_winters,
 )
 
 try:
@@ -215,11 +216,30 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         return {"status": "no_data", "message": "Add a few transactions to unlock your finance forecast."}
 
     months_of_history = len(mt)
-    income_preds, income_method, income_mae, income_rmse, income_scores = forecast_series(mt["income"], FORECAST_MONTHS_AHEAD)
-    expense_preds, expense_method, expense_mae, expense_rmse, expense_scores = forecast_series(mt["expense"], FORECAST_MONTHS_AHEAD)
+    income_preds, income_method, income_mae, income_rmse, income_scores, income_ci_lower, income_ci_upper = forecast_series(mt["income"], FORECAST_MONTHS_AHEAD)
+    expense_preds, expense_method, expense_mae, expense_rmse, expense_scores, expense_ci_lower, expense_ci_upper = forecast_series(mt["expense"], FORECAST_MONTHS_AHEAD)
 
     profit_actual = (mt["income"] - mt["expense"]).round(2)
     profit_preds = [round(i - e, 2) for i, e in zip(income_preds, expense_preds)]
+
+    # Profit's own uncertainty combines income's and expense's independently
+    # (variance of a difference of two independent estimates adds in
+    # quadrature) — so a confident income forecast paired with a shaky
+    # expense forecast still yields an honestly-wide profit band, not a
+    # falsely tight one.
+    profit_ci_lower, profit_ci_upper = [], []
+    for i, (ip, ep, il, iu, el, eu) in enumerate(zip(
+        income_preds, expense_preds, income_ci_lower, income_ci_upper, expense_ci_lower, expense_ci_upper
+    )):
+        if None in (il, iu, el, eu):
+            profit_ci_lower.append(None)
+            profit_ci_upper.append(None)
+            continue
+        margin_income = iu - ip
+        margin_expense = eu - ep
+        margin_profit = float(np.sqrt(margin_income ** 2 + margin_expense ** 2))
+        profit_ci_lower.append(round(profit_preds[i] - margin_profit, 2))
+        profit_ci_upper.append(round(profit_preds[i] + margin_profit, 2))
 
     # Profit margin: profit as a % of income, per month (0 when there was no
     # income that month, rather than dividing by zero).
@@ -243,6 +263,22 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         running = round(running + p, 2)
         cash_flow_preds.append(running)
 
+    # Cash flow's uncertainty compounds month over month — each month's
+    # margin adds in quadrature to the running total's, since it accumulates
+    # every prior month's profit uncertainty along with its own.
+    cash_flow_ci_lower, cash_flow_ci_upper = [], []
+    running_var = 0.0
+    for i, cf in enumerate(cash_flow_preds):
+        if profit_ci_lower[i] is None:
+            cash_flow_ci_lower.append(None)
+            cash_flow_ci_upper.append(None)
+            continue
+        margin_profit_i = profit_ci_upper[i] - profit_preds[i]
+        running_var += margin_profit_i ** 2
+        margin_cf = float(np.sqrt(running_var))
+        cash_flow_ci_lower.append(round(cf - margin_cf, 2))
+        cash_flow_ci_upper.append(round(cf + margin_cf, 2))
+
     # Side-by-side next-month prediction from EACH of the three candidate
     # models (not just the winner) — lets the Forecast page show a real
     # "Linear Regression vs Moving Average vs ARIMA" comparison table for
@@ -253,6 +289,7 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         "linear_trend": forecast_linear,
         "moving_average": forecast_moving_average,
         "arima": forecast_arima,
+        "holt_winters": forecast_holt_winters,
     }
     model_forecasts = {}
     for name, fn in model_fns.items():
@@ -287,6 +324,12 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         cat: round(share * next_month_expense, 2)
         for cat, share in sorted(blended_shares.items(), key=lambda kv: -kv[1])
     }
+
+    # Raw (un-blended) shares, kept separately so the UI can plot "your
+    # spending shape vs. the benchmark's" side by side rather than only the
+    # already-blended dollar forecast.
+    category_shares_user_pct = {k: round(v * 100, 1) for k, v in sorted(user_shares.items(), key=lambda kv: -kv[1])}
+    category_shares_benchmark_pct = {k: round(v * 100, 1) for k, v in sorted((benchmark_shares or {}).items(), key=lambda kv: -kv[1])}
 
     last_income = float(mt["income"].iloc[-1])
     last_expense = float(mt["expense"].iloc[-1])
@@ -331,10 +374,18 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         },
         "forecast": {
             "income": income_preds,
+            "income_lower": income_ci_lower,
+            "income_upper": income_ci_upper,
             "expense": expense_preds,
+            "expense_lower": expense_ci_lower,
+            "expense_upper": expense_ci_upper,
             "profit": profit_preds,
+            "profit_lower": profit_ci_lower,
+            "profit_upper": profit_ci_upper,
             "profit_margin": profit_margin_preds,
             "cash_flow": cash_flow_preds,
+            "cash_flow_lower": cash_flow_ci_lower,
+            "cash_flow_upper": cash_flow_ci_upper,
         },
         "model": {
             "income_method": income_method,
@@ -347,6 +398,8 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
             "expense_scores": expense_scores,
         },
         "category_forecast_next_month": category_forecast,
+        "category_shares_user_pct": category_shares_user_pct,
+        "category_shares_benchmark_pct": category_shares_benchmark_pct,
         "model_forecasts_next_month": model_forecasts,
         "used_kaggle_benchmark": used_benchmark,
         "user_data_weight_pct": round(user_weight * 100),
@@ -362,15 +415,19 @@ def build_habit_forecast(weekly: pd.DataFrame) -> dict:
             "message": "Check in for at least two weeks to unlock your productivity & habit forecast.",
         }
 
-    completion_preds, completion_method, completion_mae, completion_rmse, completion_scores = forecast_series(
+    completion_preds, completion_method, completion_mae, completion_rmse, completion_scores, completion_ci_lower, completion_ci_upper = forecast_series(
         weekly["completion_pct"], FORECAST_WEEKS_AHEAD
     )
     completion_preds = [max(0.0, min(100.0, p)) for p in completion_preds]
+    completion_ci_lower = [None if v is None else max(0.0, min(100.0, v)) for v in completion_ci_lower]
+    completion_ci_upper = [None if v is None else max(0.0, min(100.0, v)) for v in completion_ci_upper]
 
-    prod_preds, prod_method, prod_mae, prod_rmse, prod_scores = forecast_series(
+    prod_preds, prod_method, prod_mae, prod_rmse, prod_scores, prod_ci_lower, prod_ci_upper = forecast_series(
         weekly["productivity_score"], FORECAST_WEEKS_AHEAD
     )
     prod_preds = [max(0.0, min(100.0, p)) for p in prod_preds]
+    prod_ci_lower = [None if v is None else max(0.0, min(100.0, v)) for v in prod_ci_lower]
+    prod_ci_upper = [None if v is None else max(0.0, min(100.0, v)) for v in prod_ci_upper]
 
     last_completion = float(weekly["completion_pct"].iloc[-1])
     last_prod = float(weekly["productivity_score"].iloc[-1])
@@ -403,7 +460,11 @@ def build_habit_forecast(weekly: pd.DataFrame) -> dict:
         },
         "forecast": {
             "completion_pct": completion_preds,
+            "completion_pct_lower": completion_ci_lower,
+            "completion_pct_upper": completion_ci_upper,
             "productivity_score": prod_preds,
+            "productivity_score_lower": prod_ci_lower,
+            "productivity_score_upper": prod_ci_upper,
         },
         "model": {
             "completion_method": completion_method, "completion_mae": completion_mae, "completion_rmse": completion_rmse,

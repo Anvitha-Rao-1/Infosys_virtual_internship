@@ -33,7 +33,8 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Day-box check-in toggling (works on dashboard, category pages, profile)
+// Day-box check-in toggling (works on Dashboard's check-in pills and
+// Habits' week-check grid — same endpoint, same handler either way)
 document.addEventListener('click', async (e) => {
     const box = e.target.closest('.day-box');
     if (!box || box.classList.contains('future')) return;
@@ -121,5 +122,43 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('click', (e) => {
     document.querySelectorAll('.info-dot.open').forEach(dot => {
         if (!dot.contains(e.target)) dot.classList.remove('open');
+    });
+});
+
+/* ============================================================
+   IA redesign — generic tab panels (Insights hub, Finance) — no
+   page reload, no framework. Markup shape:
+     <div class="tab-group">
+       <div class="seg-tabs">
+         <button class="active" data-tab-target="overview">Overview</button>
+         <button data-tab-target="trends">Trends</button>
+       </div>
+       <div class="tab-panel active" data-tab-panel="overview">...</div>
+       <div class="tab-panel" data-tab-panel="trends">...</div>
+     </div>
+   Deep-links via the URL hash (e.g. finance.php#forecast) select the
+   matching tab on load, and switching tabs updates the hash (via
+   replaceState, so it doesn't pollute back-button history).
+   ============================================================ */
+function activateTab(group, target) {
+    const tabs = group.querySelector(':scope > .seg-tabs');
+    if (tabs) tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.tabTarget === target));
+    group.querySelectorAll(':scope > .tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tabPanel === target));
+}
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tab-target]');
+    if (!btn) return;
+    const group = btn.closest('.tab-group');
+    if (!group) return;
+    activateTab(group, btn.dataset.tabTarget);
+    if (group.id) history.replaceState(null, '', '#' + btn.dataset.tabTarget);
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    const hash = window.location.hash.replace('#', '');
+    if (!hash) return;
+    document.querySelectorAll('.tab-group').forEach(group => {
+        if (group.querySelector(`[data-tab-panel="${hash}"]`)) activateTab(group, hash);
     });
 });

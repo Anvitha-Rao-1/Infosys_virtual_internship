@@ -70,7 +70,7 @@ require_once __DIR__ . '/includes/header.php';
             <strong><?= htmlspecialchars($r['title']) ?></strong>
             <span style="color:var(--ink-soft); font-weight:500;"> · <?= date('g:i a', strtotime($r['remind_time'])) ?> · <?= htmlspecialchars($r['days_of_week']) ?><?= $r['goal_title'] ? ' · ' . htmlspecialchars($r['goal_title']) : '' ?></span>
         </span>
-        <span class="goal-tag" style="margin-left:auto; margin-right:10px; <?= $r['is_active'] ? 'background:#2F523322;color:#2F5233' : 'background:var(--lightgray);color:var(--ink-soft)' ?>">
+        <span class="goal-tag <?= $r['is_active'] ? 'tag-good' : '' ?>" style="margin-left:auto; margin-right:10px; <?= $r['is_active'] ? '' : 'background:var(--lightgray);color:var(--ink-soft)' ?>">
             <?= $r['is_active'] ? 'Active' : 'Paused' ?>
         </span>
         <form method="POST" style="display:inline;">

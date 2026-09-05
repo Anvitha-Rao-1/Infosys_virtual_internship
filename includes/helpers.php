@@ -1,4 +1,11 @@
+
 <?php
+// The shared "chart card" wrapper (title row + info-dot + consistent body
+// + empty-state) used everywhere a svg_*_chart() result gets displayed —
+// see includes/chart_card.php. Required from here so every page that
+// already does `require_once .../helpers.php` gets it for free.
+require_once __DIR__ . '/chart_card.php';
+
 // Returns array of the last 7 dates (Mon-Sun of current week), oldest first, 'Y-m-d'
 function week_dates() {
     $dates = [];
@@ -219,7 +226,12 @@ function get_forecast($pdo, $uid, $type) {
 }
 
 // Draws a simple actual (solid) -> forecast (dashed) SVG line chart for one
-// or two series. $series = ['Income' => ['actual'=>[...], 'forecast'=>[...], 'color'=>'#..'], ...]
+// or more series. $series = ['Income' => ['actual'=>[...], 'forecast'=>[...],
+// 'color'=>'#..', 'ci_lower'=>[...], 'ci_upper'=>[...]], ...] — ci_lower/
+// ci_upper are optional, one value per forecast point; when present (and
+// none of them null) a shaded 95% confidence band is drawn under the
+// dashed forecast line, so the further-out projection visibly reads as
+// less certain rather than as precise as the logged history.
 // All series must share the same $labels (actual months/weeks + forecast months/weeks).
 function svg_line_chart($labels, $series, $width = 640, $height = 200) {
     $pad_l = 46; $pad_b = 26; $pad_t = 14; $pad_r = 14;
@@ -228,8 +240,15 @@ function svg_line_chart($labels, $series, $width = 640, $height = 200) {
     $n = count($labels);
     if ($n < 2) return '<p style="color:var(--ink-soft); font-size:13px;">Not enough data points to chart yet.</p>';
 
+    $has_any_band = false;
     $all_vals = [0];
-    foreach ($series as $s) { foreach ($s['actual'] as $v) $all_vals[] = $v; foreach ($s['forecast'] as $v) $all_vals[] = $v; }
+    foreach ($series as $s) {
+        foreach ($s['actual'] as $v) $all_vals[] = $v;
+        foreach ($s['forecast'] as $v) $all_vals[] = $v;
+        if (!empty($s['ci_upper'])) {
+            foreach ($s['ci_upper'] as $v) if ($v !== null) { $all_vals[] = $v; $has_any_band = true; }
+        }
+    }
     $max_v = max($all_vals) * 1.15 ?: 1;
 
     $x_for = fn($i) => $pad_l + ($i / ($n - 1)) * $plot_w;
@@ -244,6 +263,19 @@ function svg_line_chart($labels, $series, $width = 640, $height = 200) {
     foreach ($series as $name => $s) {
         $color = $s['color'];
         $actual_n = count($s['actual']);
+
+        // confidence band, drawn first so the lines/dots sit on top of it
+        if (!empty($s['ci_lower']) && !empty($s['ci_upper'])) {
+            $band_ok = true;
+            foreach ($s['ci_upper'] as $v) if ($v === null) { $band_ok = false; break; }
+            foreach ($s['ci_lower'] as $v) if ($v === null) { $band_ok = false; break; }
+            if ($band_ok) {
+                $band = [];
+                foreach ($s['ci_upper'] as $j => $v) $band[] = $x_for($actual_n + $j) . ',' . $y_for($v);
+                for ($j = count($s['ci_lower']) - 1; $j >= 0; $j--) $band[] = $x_for($actual_n + $j) . ',' . $y_for($s['ci_lower'][$j]);
+                $svg .= '<polygon points="' . implode(' ', $band) . '" fill="' . $color . '" opacity="0.15" stroke="none"/>';
+            }
+        }
         // actual (solid)
         $pts = [];
         for ($i = 0; $i < $actual_n; $i++) $pts[] = $x_for($i) . ',' . $y_for($s['actual'][$i]);
@@ -272,7 +304,7 @@ function svg_line_chart($labels, $series, $width = 640, $height = 200) {
     foreach ($series as $name => $s) {
         $legend .= '<span style="font-size:12px; font-weight:700; color:var(--ink-soft);"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' . $s['color'] . ';margin-right:6px;"></span>' . htmlspecialchars($name) . '</span>';
     }
-    $legend .= '<span style="font-size:11.5px; color:var(--ink-soft); margin-left:auto;">— solid = actual &nbsp; ┄ dashed = forecast</span></div>';
+    $legend .= '<span style="font-size:11.5px; color:var(--ink-soft); margin-left:auto;">— solid = actual &nbsp; ┄ dashed = forecast' . ($has_any_band ? ' &nbsp; ▨ shaded = 95% confidence' : '') . '</span></div>';
 
     return $svg . $legend;
 }
@@ -844,6 +876,338 @@ function weekday_productivity_scores($pdo, $uid, $weeks = 8) {
     }
     usort($rows, fn($a, $b) => $b['score'] <=> $a['score']);
     return $rows;
+}
+
+/* ============================================================
+   Phase 4 — richer chart types (radar, scatter-with-trend-line,
+   grouped SVG bars) and the extra queries that feed them, plus a
+   shared label helper for the 4-model forecast comparison tables.
+   ============================================================ */
+
+// Shared label for a forecasting method code — used by forecast.php and
+// productivity.php's "why these numbers?" model comparison tables so both
+// pages describe the same four candidate models the same way.
+function forecast_method_label($m) {
+    $map = ['arima' => 'ARIMA', 'holt_winters' => 'Holt-Winters'];
+    if (isset($map[$m])) return $map[$m];
+    return $m ? ucwords(str_replace('_', ' ', $m)) : '—';
+}
+
+// Radar / spider chart — one polygon per series across N shared axes, e.g.
+// comparing each category's completion rate this week vs. last week, or a
+// week's productivity score shape across the seven weekdays.
+// $axes = ['Label1','Label2',...] (>=3); $series = ['Name' => ['values'=>[0..$max_val,...], 'color'=>'#hex'], ...]
+function svg_radar_chart($axes, $series, $max_val = 100, $size = 280) {
+    $n = count($axes);
+    if ($n < 3) return '<p style="color:var(--ink-soft); font-size:13px;">Need at least 3 categories to draw this chart.</p>';
+    $cx = $size / 2; $cy = $size / 2;
+    $r = $size / 2 - 34;
+    $angle_for = fn($i) => (M_PI * 2 * $i / $n) - M_PI / 2;
+    $point_for = fn($i, $val) => [
+        $cx + cos($angle_for($i)) * (max(0, $val) / $max_val) * $r,
+        $cy + sin($angle_for($i)) * (max(0, $val) / $max_val) * $r,
+    ];
+
+    $svg = "<svg width=\"100%\" height=\"$size\" viewBox=\"0 0 $size $size\" style=\"overflow:visible;\">";
+    // concentric grid rings at 25/50/75/100%
+    foreach ([0.25, 0.5, 0.75, 1.0] as $ring) {
+        $pts = [];
+        for ($i = 0; $i < $n; $i++) { [$x, $y] = $point_for($i, $max_val * $ring); $pts[] = "$x,$y"; }
+        $svg .= '<polygon points="' . implode(' ', $pts) . '" fill="none" stroke="#EFEFEF" stroke-width="1"/>';
+    }
+    // axis spokes + labels
+    for ($i = 0; $i < $n; $i++) {
+        [$x, $y] = $point_for($i, $max_val);
+        $svg .= "<line x1=\"$cx\" y1=\"$cy\" x2=\"$x\" y2=\"$y\" stroke=\"#EFEFEF\" stroke-width=\"1\"/>";
+        [$lx, $ly] = $point_for($i, $max_val * 1.18);
+        $cos_a = cos($angle_for($i));
+        $anchor = (abs($cos_a) < 0.3) ? 'middle' : ($cos_a > 0 ? 'start' : 'end');
+        $svg .= "<text x=\"$lx\" y=\"$ly\" font-size=\"10.5\" fill=\"#74747A\" text-anchor=\"$anchor\" dominant-baseline=\"middle\">" . htmlspecialchars(short_label($axes[$i], 13)) . '</text>';
+    }
+    // one polygon per series
+    foreach ($series as $name => $s) {
+        $pts = [];
+        foreach ($s['values'] as $i => $v) { [$x, $y] = $point_for($i, $v); $pts[] = "$x,$y"; }
+        if (count($pts) >= 3) {
+            $svg .= '<polygon points="' . implode(' ', $pts) . '" fill="' . $s['color'] . '" fill-opacity="0.18" stroke="' . $s['color'] . '" stroke-width="2.5" stroke-linejoin="round"/>';
+        }
+        foreach ($s['values'] as $i => $v) { [$x, $y] = $point_for($i, $v); $svg .= "<circle cx=\"$x\" cy=\"$y\" r=\"3.5\" fill=\"{$s['color']}\"/>"; }
+    }
+    $svg .= '</svg>';
+
+    $legend = '<div style="display:flex; gap:16px; margin-top:4px; flex-wrap:wrap;">';
+    foreach ($series as $name => $s) {
+        $legend .= '<span style="font-size:12px; font-weight:700; color:var(--ink-soft);"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' . $s['color'] . ';margin-right:6px;"></span>' . htmlspecialchars($name) . '</span>';
+    }
+    $legend .= '</div>';
+    return $svg . $legend;
+}
+
+// Scatter plot with a fitted linear trend line and Pearson correlation
+// coefficient — for "does X move with Y" views (e.g. wellness score vs.
+// habit completion, focus minutes vs. completion rate) that a bar or line
+// chart can't show. $points = [['x'=>float,'y'=>float,'label'=>string?], ...]
+function svg_scatter_chart($points, $x_label, $y_label, $color = '#9391F5', $width = 560, $height = 240) {
+    $n = count($points);
+    if ($n < 3) return '<p style="color:var(--ink-soft); font-size:13px;">Need a few more data points to plot this.</p>';
+    $pad_l = 40; $pad_b = 34; $pad_t = 14; $pad_r = 14;
+    $plot_w = $width - $pad_l - $pad_r;
+    $plot_h = $height - $pad_t - $pad_b;
+
+    $xs = array_column($points, 'x'); $ys = array_column($points, 'y');
+    $x_min = min(0, min($xs)); $x_max = max($xs) ?: 1;
+    $y_min = min(0, min($ys)); $y_max = max($ys) ?: 1;
+    if ($x_max <= $x_min) $x_max = $x_min + 1;
+    if ($y_max <= $y_min) $y_max = $y_min + 1;
+    $x_max_scaled = $x_max * 1.08; $y_max_scaled = $y_max * 1.15;
+
+    $x_for = fn($v) => $pad_l + (($v - $x_min) / ($x_max_scaled - $x_min)) * $plot_w;
+    $y_for = fn($v) => $pad_t + $plot_h - (($v - $y_min) / ($y_max_scaled - $y_min)) * $plot_h;
+
+    // linear regression (least squares) for the trend line, plus Pearson r
+    $mean_x = array_sum($xs) / $n; $mean_y = array_sum($ys) / $n;
+    $num = 0; $den_x = 0; $den_y = 0;
+    foreach ($points as $p) {
+        $num += ($p['x'] - $mean_x) * ($p['y'] - $mean_y);
+        $den_x += ($p['x'] - $mean_x) ** 2;
+        $den_y += ($p['y'] - $mean_y) ** 2;
+    }
+    $slope = $den_x > 0 ? $num / $den_x : 0;
+    $intercept = $mean_y - $slope * $mean_x;
+    $r = ($den_x > 0 && $den_y > 0) ? $num / sqrt($den_x * $den_y) : 0;
+
+    $svg = "<svg width=\"100%\" height=\"$height\" viewBox=\"0 0 $width $height\" preserveAspectRatio=\"none\" style=\"overflow:visible;\">";
+    for ($g = 0; $g <= 3; $g++) {
+        $gy = $pad_t + ($plot_h / 3) * $g;
+        $svg .= "<line x1=\"$pad_l\" y1=\"$gy\" x2=\"" . ($width - $pad_r) . "\" y2=\"$gy\" stroke=\"#EFEFEF\" stroke-width=\"1\"/>";
+    }
+    // trend line, spanning the plotted x-range
+    $svg .= '<line x1="' . $x_for($x_min) . '" y1="' . $y_for($slope * $x_min + $intercept) . '" x2="' . $x_for($x_max) . '" y2="' . $y_for($slope * $x_max + $intercept) . '" stroke="' . $color . '" stroke-width="2" stroke-dasharray="6,5" opacity="0.55"/>';
+    // points
+    foreach ($points as $p) {
+        $title = !empty($p['label']) ? ('<title>' . htmlspecialchars($p['label']) . ": {$p['x']}, {$p['y']}</title>") : '';
+        $svg .= '<circle cx="' . $x_for($p['x']) . '" cy="' . $y_for($p['y']) . '" r="5" fill="' . $color . '" fill-opacity="0.7" stroke="' . $color . '" stroke-width="1">' . $title . '</circle>';
+    }
+    $svg .= '<text x="' . $pad_l . '" y="' . ($height - 6) . '" font-size="10" fill="#74747A">' . htmlspecialchars($x_label) . ' →</text>';
+    $svg .= '<text x="2" y="' . ($pad_t + 2) . '" font-size="10" fill="#74747A">↑ ' . htmlspecialchars($y_label) . '</text>';
+    $svg .= '</svg>';
+
+    $strength = abs($r) >= 0.6 ? 'strong' : (abs($r) >= 0.3 ? 'moderate' : 'weak');
+    $direction = $r >= 0 ? 'positive' : 'negative';
+    $note = '<div style="font-size:12px; color:var(--ink-soft); font-weight:600; margin-top:6px;">r = ' . round($r, 2) . " — a $strength $direction correlation.</div>";
+    return $svg . $note;
+}
+
+// Grouped SVG bar chart — several series side by side per label (e.g. "this
+// week" vs. "last week" check-ins per weekday), a step up from the plain
+// single-series CSS bars used elsewhere for a direct visual comparison.
+// $series = ['This week' => ['values'=>[...], 'color'=>'#hex'], ...]
+function svg_grouped_bar_chart($labels, $series, $width = 640, $height = 200) {
+    $pad_l = 30; $pad_b = 26; $pad_t = 14; $pad_r = 10;
+    $plot_w = $width - $pad_l - $pad_r;
+    $plot_h = $height - $pad_t - $pad_b;
+    $n = count($labels);
+    if ($n === 0 || empty($series)) return '';
+    $all_vals = [1];
+    foreach ($series as $s) foreach ($s['values'] as $v) $all_vals[] = $v;
+    $max_v = max($all_vals) * 1.15;
+
+    $group_w = $plot_w / $n;
+    $n_series = count($series);
+    $bar_gap = 4;
+    $bar_w = max(4, ($group_w - $bar_gap * ($n_series + 1)) / $n_series);
+
+    $svg = "<svg width=\"100%\" height=\"$height\" viewBox=\"0 0 $width $height\" preserveAspectRatio=\"none\" style=\"overflow:visible;\">";
+    for ($g = 0; $g <= 3; $g++) {
+        $gy = $pad_t + ($plot_h / 3) * $g;
+        $svg .= "<line x1=\"$pad_l\" y1=\"$gy\" x2=\"" . ($width - $pad_r) . "\" y2=\"$gy\" stroke=\"#EFEFEF\" stroke-width=\"1\"/>";
+    }
+    for ($i = 0; $i < $n; $i++) {
+        $gx = $pad_l + $i * $group_w;
+        $s_idx = 0;
+        foreach ($series as $name => $s) {
+            $v = $s['values'][$i] ?? 0;
+            $bh = $max_v > 0 ? ($v / $max_v) * $plot_h : 0;
+            $bx = $gx + $bar_gap + $s_idx * ($bar_w + $bar_gap);
+            $by = $pad_t + $plot_h - max(2, $bh);
+            $svg .= "<rect x=\"$bx\" y=\"$by\" width=\"$bar_w\" height=\"" . max(2, $bh) . "\" rx=\"3\" fill=\"{$s['color']}\"><title>" . htmlspecialchars($name) . ' — ' . htmlspecialchars($labels[$i]) . ": $v</title></rect>";
+            $s_idx++;
+        }
+        $svg .= '<text x="' . ($gx + $group_w / 2) . '" y="' . ($height - 6) . '" font-size="10" fill="#74747A" text-anchor="middle">' . htmlspecialchars($labels[$i]) . '</text>';
+    }
+    $svg .= '</svg>';
+
+    $legend = '<div style="display:flex; gap:16px; margin-top:8px; flex-wrap:wrap;">';
+    foreach ($series as $name => $s) {
+        $legend .= '<span style="font-size:12px; font-weight:700; color:var(--ink-soft);"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:' . $s['color'] . ';margin-right:6px;"></span>' . htmlspecialchars($name) . '</span>';
+    }
+    $legend .= '</div>';
+    return $svg . $legend;
+}
+
+// Last week's version of category_completion_this_week() — same shape,
+// shifted back 7 days — so the two can be plotted together (radar chart,
+// grouped bars) instead of only ever showing "this week" in isolation.
+function category_completion_prev_week($pdo, $uid) {
+    $stmt = $pdo->prepare(
+        "SELECT c.id, c.name, c.color, COUNT(g.id) goal_count,
+            (SELECT COUNT(*) FROM goal_logs gl JOIN goals g2 ON g2.id=gl.goal_id
+             WHERE g2.category_id=c.id AND g2.user_id=? AND gl.status='done'
+             AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 13 DAY) AND gl.log_date < DATE_SUB(CURDATE(), INTERVAL 6 DAY)) as done_week
+         FROM categories c JOIN goals g ON g.category_id=c.id AND g.user_id=? AND g.is_active=1
+         GROUP BY c.id, c.name, c.color HAVING goal_count > 0"
+    );
+    $stmt->execute([$uid, $uid]);
+    $rows = $stmt->fetchAll();
+    foreach ($rows as &$r) {
+        $possible = $r['goal_count'] * 7;
+        $r['rate_pct'] = $possible > 0 ? round(($r['done_week'] / $possible) * 100) : 0;
+    }
+    unset($r);
+    return $rows;
+}
+
+// This-week vs. last-week check-ins per weekday (Mon-Sun) — the grouped-bar
+// counterpart to weekly_checkin_bars() above, which only ever shows one week.
+function weekly_checkin_bars_compare($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $active_goal_count = max(1, (int)$stmt->fetch()['c']);
+
+    $this_dates = week_dates();
+    $last_dates = array_map(fn($d) => (new DateTime($d))->modify('-7 days')->format('Y-m-d'), $this_dates);
+
+    $stmt = $pdo->prepare("SELECT gl.log_date, COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+        WHERE g.user_id=? AND gl.status='done' AND gl.log_date BETWEEN ? AND ? GROUP BY gl.log_date");
+    $stmt->execute([$uid, $last_dates[0], end($this_dates)]);
+    $by_date = [];
+    foreach ($stmt->fetchAll() as $r) $by_date[$r['log_date']] = (int)$r['c'];
+
+    $labels = []; $this_week = []; $last_week = [];
+    foreach ($this_dates as $i => $d) {
+        $labels[] = (new DateTime($d))->format('D');
+        $this_week[] = $by_date[$d] ?? 0;
+        $last_week[] = $by_date[$last_dates[$i]] ?? 0;
+    }
+    return ['labels' => $labels, 'this_week' => $this_week, 'last_week' => $last_week, 'max' => $active_goal_count];
+}
+
+// Weekly wellness score vs. weekly habit-completion %, aligned on the same
+// ISO-week buckets wellness_score_weekly() uses — for a scatter chart that
+// answers "do better-wellness weeks also mean better habit consistency?"
+// rather than presenting the two trends only side by side.
+function wellness_completion_correlation($pdo, $uid, $weeks = 8) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $n_goals = (int)$stmt->fetch()['c'];
+    if ($n_goals === 0) return [];
+
+    $stmt = $pdo->prepare("SELECT log_date, mood, sleep_hours, stress_level FROM mood_logs
+        WHERE user_id=? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ORDER BY log_date");
+    $stmt->execute([$uid, $weeks * 7 - 1]);
+    $mood_rows = $stmt->fetchAll();
+    if (empty($mood_rows)) return [];
+
+    $stmt = $pdo->prepare("SELECT gl.log_date FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+        WHERE g.user_id=? AND gl.status='done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)");
+    $stmt->execute([$uid, $weeks * 7 - 1]);
+    $checkin_rows = $stmt->fetchAll();
+
+    $mood_buckets = [];
+    foreach ($mood_rows as $r) {
+        $wk = (new DateTime($r['log_date']))->format('o-\WW');
+        $mood_buckets[$wk][] = $r;
+    }
+    $checkin_buckets = [];
+    foreach ($checkin_rows as $r) {
+        $wk = (new DateTime($r['log_date']))->format('o-\WW');
+        $checkin_buckets[$wk] = ($checkin_buckets[$wk] ?? 0) + 1;
+    }
+    ksort($mood_buckets);
+
+    $points = []; $i = 1;
+    foreach ($mood_buckets as $wk => $wrows) {
+        $mood_avg = 0; $sleep_avg = 0; $sleep_n = 0; $stress_penalty = 0;
+        foreach ($wrows as $r) {
+            $mood_avg += MOOD_META[$r['mood']]['score'];
+            if ($r['sleep_hours'] !== null) { $sleep_avg += (float)$r['sleep_hours']; $sleep_n++; }
+            if ($r['stress_level'] === 'high') $stress_penalty += 2;
+            elseif ($r['stress_level'] === 'medium') $stress_penalty += 1;
+        }
+        $mood_avg /= count($wrows);
+        $sleep_avg = $sleep_n > 0 ? $sleep_avg / $sleep_n : 7;
+        $wellness = round(($mood_avg / 5) * 60 + min($sleep_avg / 8, 1) * 30 + max(0, 10 - $stress_penalty));
+        $done = $checkin_buckets[$wk] ?? 0;
+        $completion = min(100, round(($done / ($n_goals * 7)) * 100));
+        $points[] = ['x' => $wellness, 'y' => $completion, 'label' => 'Wk ' . $i];
+        $i++;
+    }
+    return $points;
+}
+
+// Daily focus-session minutes vs. that day's check-in completion % over the
+// last $days days — for a scatter chart answering "do longer focus days
+// also mean better follow-through on habits?" Returns [] when there's no
+// focus-session activity at all in the window (nothing meaningful to plot).
+function focus_completion_daily($pdo, $uid, $days = 30) {
+    $stmt = $pdo->prepare("SELECT COUNT(*) c FROM goals WHERE user_id=? AND is_active=1");
+    $stmt->execute([$uid]);
+    $n_goals = (int)$stmt->fetch()['c'];
+    if ($n_goals === 0) return [];
+
+    $stmt = $pdo->prepare("SELECT DATE(started_at) d, COALESCE(SUM(actual_minutes),0) m FROM focus_sessions
+        WHERE user_id=? AND started_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY) GROUP BY d");
+    $stmt->execute([$uid, $days - 1]);
+    $focus_by_day = [];
+    foreach ($stmt->fetchAll() as $r) $focus_by_day[$r['d']] = (int)$r['m'];
+    if (empty($focus_by_day)) return [];
+
+    $stmt = $pdo->prepare("SELECT gl.log_date d, COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id
+        WHERE g.user_id=? AND gl.status='done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY) GROUP BY d");
+    $stmt->execute([$uid, $days - 1]);
+    $checkins_by_day = [];
+    foreach ($stmt->fetchAll() as $r) $checkins_by_day[$r['d']] = (int)$r['c'];
+
+    $points = [];
+    $cursor = new DateTime('-' . ($days - 1) . ' days');
+    for ($i = 0; $i < $days; $i++) {
+        $d = $cursor->format('Y-m-d');
+        $mins = $focus_by_day[$d] ?? 0;
+        $done = $checkins_by_day[$d] ?? 0;
+        $pct = min(100, round(($done / $n_goals) * 100));
+        $points[] = ['x' => $mins, 'y' => $pct, 'label' => $cursor->format('d M')];
+        $cursor->modify('+1 day');
+    }
+    return $points;
+}
+
+/* ============================================================
+   Phase 5 — IA consolidation: small shared queries so the Dashboard's
+   "needs attention" list and AI Coach's insights answer the same
+   question (what's pending, what streak is at risk) from ONE place
+   instead of two copies of the same query.
+   ============================================================ */
+
+// Active goals not yet checked in today.
+function goals_pending_today($pdo, $uid) {
+    $today = date('Y-m-d');
+    $stmt = $pdo->prepare("SELECT g.*, c.name cat_name, c.slug cat_slug FROM goals g JOIN categories c ON c.id=g.category_id
+        WHERE g.user_id=? AND g.is_active=1 AND g.id NOT IN (SELECT goal_id FROM goal_logs WHERE log_date=? AND status='done')");
+    $stmt->execute([$uid, $today]);
+    return $stmt->fetchAll();
+}
+
+// Of today's not-yet-done goals, the ones with a real streak (>=3 days)
+// still on the line — sorted longest-streak-first.
+function streaks_at_risk($pdo, $uid, $pending_today = null) {
+    $pending_today = $pending_today ?? goals_pending_today($pdo, $uid);
+    $at_risk = [];
+    foreach ($pending_today as $g) {
+        $s = current_streak($pdo, $g['id']);
+        if ($s >= 3) $at_risk[] = ['goal' => $g, 'streak' => $s];
+    }
+    usort($at_risk, fn($a, $b) => $b['streak'] <=> $a['streak']);
+    return $at_risk;
 }
 
 // A small static, rotating "quote of the day" widget — plain text,

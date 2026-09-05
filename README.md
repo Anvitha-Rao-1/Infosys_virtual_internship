@@ -52,7 +52,8 @@ this set up from your TechFinance project, so you can reuse it.
 Go to:
 
 ```
-http://localhost/habit-tracker/
+
+
 ```
 
 You'll land on the login page. Click **Create an account**, register, and
@@ -177,11 +178,13 @@ future trend predictions.**
     % and current streak); and insight cards (best/worst category, most
     consistent weekday, trend commentary).
   > **Important for your Q&A:** the *forecasting* half is a real, if
-  > intentionally simple, ML pipeline (`ml/train_model.py`) —
-  > **scikit-learn Linear Regression** and a **Moving Average** model,
+  > intentionally simple, ML pipeline (`ml/train_model.py`) — four
+  > candidate models (**scikit-learn Linear Regression**, **Moving
+  > Average**, **ARIMA**, and **Holt-Winters** exponential smoothing),
   > backtested against your own recent history to pick whichever
   > predicts better, for both the finance numbers and the productivity
-  > score. The *analysis* half (habit overview, time allocation,
+  > score — plus a 95% confidence band derived from that backtest, drawn
+  > as a shaded region around every forecast line. The *analysis* half (habit overview, time allocation,
   > best/worst category) is live, explainable PHP logic in
   > `includes/helpers.php` — the same "rule-based, not a black box"
   > philosophy as `coach.php`, computed fresh on every page load with no
@@ -377,3 +380,43 @@ existing `goals`, `goal_logs`, `focus_sessions`, `mood_logs` and
 `model_forecasts_next_month`, `user_data_weight_pct` and
 `months_of_history_used` fields (written by `ml/train_model.py` — re-run it
 after updating, see `ml/README_ML.md`).
+
+### Analytics upgrade — a fourth forecasting model, confidence bands, and richer chart types
+
+- **Forecasting gained a fourth candidate model — Holt-Winters exponential
+  smoothing (damped trend)** — alongside Linear Regression, Moving Average
+  and ARIMA, backtested the same way for both finance and productivity/
+  habit forecasts. It tends to track real (non-straight-line) habit and
+  spending data more accurately than a plain trend line, without a moving
+  average's blindness to trend. See `ml/README_ML.md` for the full
+  rationale.
+- **Every forecast line now carries a 95% confidence band**, derived from
+  the winning model's own backtest RMSE and widened by `sqrt(step)` the
+  further out it projects (`confidence_interval()` in `ml/forecasting.py`).
+  Drawn as a shaded region under the dashed forecast line by
+  `svg_line_chart()` on the Forecast, Productivity Analysis and Dashboard
+  pages — profit and cumulative cash flow combine income's and expense's
+  margins in quadrature rather than getting a falsely tight band of their
+  own.
+- **Three new SVG chart types in `includes/helpers.php`**, used where a
+  single-series bar or line chart couldn't show the real comparison:
+  - `svg_radar_chart()` — category completion this week vs. last week
+    (Insights & Reports), weekday productivity "rhythm" across all seven
+    days at once (Productivity Analysis), and your spending shape vs. the
+    benchmark dataset's (Forecast).
+  - `svg_scatter_chart()` — a fitted trend line plus Pearson correlation
+    coefficient for wellness score vs. habit completion (Insights &
+    Reports) and focus time vs. completion (Productivity Analysis).
+  - `svg_grouped_bar_chart()` — this week vs. last week check-ins per
+    weekday (Insights & Reports), replacing a single-week bar chart with
+    a direct side-by-side comparison.
+- **New helpers feeding those charts**: `category_completion_prev_week()`,
+  `weekly_checkin_bars_compare()`, `wellness_completion_correlation()`,
+  `focus_completion_daily()`, and a shared `forecast_method_label()` used
+  by both Forecast's and Productivity Analysis's "why these numbers?"
+  model comparison tables (now listing all four candidate models, not
+  three).
+- The finance forecast payload also now exposes the raw
+  `category_shares_user_pct` / `category_shares_benchmark_pct` splits
+  (previously only the already-blended dollar forecast was cached), which
+  is what the new "spending shape vs. benchmark" radar chart plots.

@@ -45,23 +45,23 @@ require_once __DIR__ . '/includes/header.php';
 <div class="bento-grid">
     <div class="bento-cell anim-in">
         <h4>Sessions this week</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-target="<?= $stats['sessions'] ?>">0</span></div>
+        <div class="stat-value"><span class="count-up" data-target="<?= $stats['sessions'] ?>">0</span></div>
     </div>
     <div class="bento-cell anim-in">
         <h4>Avg. focus time</h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-target="<?= $stats['avg_minutes'] ?>" data-suffix=" min">0 min</span></div>
+        <div class="stat-value"><span class="count-up" data-target="<?= $stats['avg_minutes'] ?>" data-suffix=" min">0 min</span></div>
     </div>
     <div class="bento-cell anim-in">
         <h4>Success rate
             <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">% of this week's sessions marked "Complete" rather than stopped early.</span></span>
         </h4>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><span class="count-up" data-target="<?= $stats['success_rate'] ?>" data-suffix="%">0%</span></div>
+        <div class="stat-value"><span class="count-up" data-target="<?= $stats['success_rate'] ?>" data-suffix="%">0%</span></div>
     </div>
     <div class="bento-cell anim-in">
         <h4>Total focus time</h4>
         <?php $th = intdiv($stats['total_minutes'], 60); $tm = $stats['total_minutes'] % 60; ?>
-        <div style="font-family:'Nunito',sans-serif; font-weight:800; font-size:30px;"><?= $th ?>h <?= $tm ?>m</div>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">last 7 days</div>
+        <div class="stat-value"><?= $th ?>h <?= $tm ?>m</div>
+        <div class="caption" style="margin-top:4px;">last 7 days</div>
     </div>
 </div>
 
@@ -96,7 +96,7 @@ require_once __DIR__ . '/includes/header.php';
 
     <div id="timerPanel" style="display:none;">
         <div id="timerGoalLabel" style="font-size:13px; font-weight:700; color:var(--ink-soft); margin-bottom:8px;"></div>
-        <div id="timerDisplay" style="font-family:'Nunito',sans-serif; font-weight:800; font-size:64px; margin-bottom:22px;">25:00</div>
+        <div id="timerDisplay" class="timer-display">25:00</div>
         <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
             <button class="btn btn-ghost" id="pauseBtn" onclick="togglePause()">⏸ Pause</button>
             <button class="btn btn-primary" onclick="finishSession('completed')">✓ Complete</button>
@@ -120,7 +120,7 @@ require_once __DIR__ . '/includes/header.php';
             <strong><?= $s['actual_minutes'] ?> min</strong>
             <span style="color:var(--ink-soft); font-weight:500;"> · <?= $s['goal_title'] ? htmlspecialchars($s['goal_title']) : 'Deep work' ?> · <?= date('d M, g:i a', strtotime($s['started_at'])) ?></span>
         </span>
-        <span class="goal-tag" style="margin-left:auto; <?= $s['status'] === 'completed' ? 'background:#2F523322;color:#2F5233' : 'background:#F5C3D355;color:#B8447A' ?>">
+        <span class="goal-tag <?= $s['status'] === 'completed' ? 'tag-good' : 'tag-attention' ?>" style="margin-left:auto;">
             <?= $s['status'] === 'completed' ? '✓ Completed' : '✕ Interrupted' ?>
         </span>
     </div>

@@ -69,7 +69,7 @@ require_once __DIR__ . '/includes/header.php';
     <button class="btn btn-primary btn-sm" onclick="document.getElementById('addGoalModal').classList.add('show')">+ Add goal</button>
 </div>
 <p style="color:var(--ink-soft); font-weight:500; font-size:13.5px; margin-top:-14px; margin-bottom:22px;">
-    Manage every goal in one place — day-to-day check-ins still happen on <a href="activity.php" style="color:var(--lavender-deep); font-weight:700;">Activity Tracker</a>.
+    Manage every goal in one place — day-to-day check-ins still happen on <a href="habits.php" style="color:var(--lavender-deep); font-weight:700;">Habits</a>.
 </p>
 
 <?php if (empty($goals)): ?>

@@ -20,14 +20,29 @@ every number in a viva:
   before it, rather than just fitting a straight line. It needs at least
   6 periods of history to fit; with less than that it silently falls back
   to Moving Average rather than erroring.
+- **Holt-Winters exponential smoothing** (damped trend, via `statsmodels`)
+  as a fourth candidate — weights recent periods more heavily than a plain
+  average, and damps its trend the further out it projects, which tends to
+  track real habit/spending data (rarely a perfectly straight line) more
+  accurately than Linear Regression alone. Falls back to Moving Average on
+  short or non-converging series, same philosophy as ARIMA above.
 - A **backtest** (predict the last few real periods using only earlier
-  ones, compare to what actually happened) picks whichever of the three
+  ones, compare to what actually happened) picks whichever of the four
   was more accurate — that's where the MAE, RMSE *and* MAPE numbers on
-  the Forecast page come from, for *all three* candidates side-by-side
+  the Forecast page come from, for *all four* candidates side-by-side
   (see the "Why these numbers?" disclosure under each chart), not just
   the winner. Income and expense each pick their own best model
   independently — it's common for one to be better predicted by ARIMA
-  and the other by Linear Regression.
+  and the other by Linear Regression or Holt-Winters.
+- A **95% confidence interval** is derived from the winning model's own
+  backtest RMSE (`confidence_interval()` in `forecasting.py`), widening by
+  `sqrt(step)` the further out the forecast reaches under the standard
+  random-walk assumption that independent one-step errors compound in
+  variance, not linearly. It's drawn as a shaded band under every dashed
+  forecast line on the Forecast, Productivity Analysis and Dashboard
+  pages (`svg_line_chart()`'s `ci_lower`/`ci_upper` series keys) — so a
+  three-month-out projection visibly reads as less certain than next
+  month's, instead of both looking equally precise.
 
   **Why not Facebook Prophet, if the assignment mentions it?** We looked
   at it and deliberately decided against it: Prophet is a heavy
@@ -54,8 +69,8 @@ every number in a viva:
   the goal) × how many times you checked in, versus what all your active
   goals would take if you hit every one, every day. That score (and your
   plain completion %) is forecast forward with the same backtested
-  Linear Regression / Moving Average approach — no benchmark dataset
-  involved here, since this is inherently personal behavioural data. The
+  four-model approach — no benchmark dataset involved here, since this is
+  inherently personal behavioural data. The
   rest of the Productivity & Habits tab (habit-by-habit streaks, time
   allocation by category, best/worst category, most consistent weekday)
   is live, rule-based PHP in `includes/helpers.php` — no retraining
@@ -78,14 +93,24 @@ every number in a viva:
   the rough estimate.
 - **Forecast Summary, by model** (new): alongside the "this month vs.
   next month" table, the Forecast page now has a second table showing
-  what *each* of the three candidate models (Linear Regression, Moving
-  Average, ARIMA) individually predicts for next month's revenue,
-  expense, profit, profit margin and cumulative cash flow — computed in
-  `build_finance_forecast()` in `train_model.py` and cached under the
-  `model_forecasts_next_month` key. This is what actually gets used to
-  pick the KPI cards at the top of the page (whichever model backtested
-  more accurately per the MAE/RMSE/MAPE table wins), laid out so you can
-  see all three side-by-side rather than just the winner.
+  what *each* of the four candidate models (Linear Regression, Moving
+  Average, ARIMA, Holt-Winters) individually predicts for next month's
+  revenue, expense, profit, profit margin and cumulative cash flow —
+  computed in `build_finance_forecast()` in `train_model.py` and cached
+  under the `model_forecasts_next_month` key. This is what actually gets
+  used to pick the KPI cards at the top of the page (whichever model
+  backtested more accurately per the MAE/RMSE/MAPE table wins), laid out
+  so you can see all four side-by-side rather than just the winner.
+- **Richer chart types** (new): besides the actual/forecast line charts
+  (now with confidence bands), `includes/helpers.php` has a radar/spider
+  chart (`svg_radar_chart()` — category performance this week vs. last
+  week on Insights & Reports, weekday productivity "rhythm" on
+  Productivity Analysis, your spending shape vs. the benchmark dataset on
+  Forecast), a scatter chart with a fitted trend line and Pearson
+  correlation coefficient (`svg_scatter_chart()` — wellness vs. habit
+  completion, focus time vs. completion), and a grouped SVG bar chart
+  (`svg_grouped_bar_chart()` — this week vs. last week check-ins per
+  weekday) for comparisons a single-series bar or line chart can't show.
 - **How your data connects to the benchmark dataset** (new): a card on
   the Forecast page spells out, in plain language and with your actual
   numbers, exactly how many months of your own history you've logged,

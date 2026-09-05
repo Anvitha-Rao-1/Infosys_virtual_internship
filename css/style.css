@@ -29,6 +29,37 @@
     --radius-md: 18px;
     --shadow-soft: 0 10px 28px -10px rgba(18,18,18,0.14);
     --shadow-soft-sm: 0 6px 16px -6px rgba(18,18,18,0.12);
+
+    /* ---- Semantic color system (v6) ----
+       Exactly three meanings, used everywhere the same way. Pastel palette
+       above is decorative/brand; these are the only colors allowed to
+       *mean* something (a badge, a KPI delta, a status tag). Values are
+       the ones already in ad hoc use across the app (alert-success/error,
+       "done"/"interrupted" tags) — consolidated to one pair each instead
+       of four slightly different pinks and two different greens. */
+    --good: #5C7A17;
+    --good-ink: #2F5233;
+    --good-bg: #EAF6D2;
+    --good-border: #CFE8A8;
+    --attention: #D6577A;
+    --attention-ink: #B8447A;
+    --attention-bg: #FCE4EE;
+    --attention-border: #F5C3D3;
+    --accent-ink: var(--ink);
+    --accent-bg: var(--lime);
+
+    /* ---- Type scale (v6) ----
+       H1/H2/H3 + body + caption, one size+weight each, so PHP templates
+       stop picking their own px value per card. Display sizes use Nunito
+       (already the heading font); body/caption stay on Poppins. */
+    --font-h1: 800 32px/1.15 'Nunito', sans-serif;
+    --font-h2: 800 22px/1.2 'Nunito', sans-serif;
+    --font-h3: 800 17px/1.3 'Nunito', sans-serif;
+    --font-eyebrow: 700 12.5px/1.3 'Poppins', sans-serif;
+    --font-stat: 800 28px/1.1 'Nunito', sans-serif;
+    --font-stat-sm: 800 20px/1.2 'Nunito', sans-serif;
+    --font-body: 500 14px/1.5 'Poppins', sans-serif;
+    --font-caption: 600 12px/1.4 'Poppins', sans-serif;
 }
 
 html, body{ height: 100%; }
@@ -58,7 +89,7 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 .btn-ghost:hover{ background: var(--lightgray); box-shadow:none; }
 .btn-block{ width: 100%; }
 .btn-sm{ padding: 10px 18px; font-size: 13px; }
-.btn-danger{ background: var(--white); color: #D6577A; border: 1.5px solid #F5C3D3; box-shadow:none; }
+.btn-danger{ background: var(--white); color: var(--attention); border: 1.5px solid var(--attention-border); box-shadow:none; }
 
 /* ---------------- Auth pages (login/register) ---------------- */
 .auth-wrap{ min-height: 100vh; display: grid; grid-template-columns: 1.05fr 1fr; }
@@ -106,8 +137,8 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 .auth-switch{ margin-top: 22px; text-align:center; font-size: 14px; color: var(--ink-soft); font-weight:500;}
 .auth-switch a{ color: var(--lavender-deep); font-weight: 800; }
 .alert{ padding: 13px 18px; border-radius: var(--radius-md); font-size: 13.5px; margin-bottom: 18px; font-weight:600; }
-.alert-error{ background: #FCE4EE; color: #B8447A; }
-.alert-success{ background: #EAF6D2; color: #5C7A17; }
+.alert-error{ background: var(--attention-bg); color: var(--attention-ink); }
+.alert-success{ background: var(--good-bg); color: var(--good-ink); }
 
 /* ---------------- App shell ---------------- */
 .app-shell{ display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
@@ -128,7 +159,8 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 }
 .side-nav a:hover{ background: var(--offwhite); color: var(--ink); }
 .side-nav a.active{ background: var(--lime); color: var(--ink); font-weight: 800; box-shadow: var(--shadow-soft-sm); }
-.nav-ico{ width: 20px; text-align:center; font-size: 14px; }
+.nav-ico{ width: 20px; height: 20px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.nav-ico svg{ display:block; }
 .nav-label{ font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #B9B9BF; margin: 13px 14px 6px; font-weight: 700;}
 
 .main-panel{ display:flex; flex-direction:column; min-width: 0; }
@@ -142,57 +174,31 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 /* ---------------- Day strip (Mon-Sun date row) ---------------- */
 .day-strip{ display:flex; gap: 10px; margin: 20px 0 30px; flex-wrap: wrap; }
 .day-strip .d-tile{
+    /* v6: neutral by default (was: cycled lime/lavender by position,
+       meaning-free) — .today is the only state worth highlighting. */
     width: 58px; height: 58px; border-radius: 18px;
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    background: var(--sky); font-weight: 700; box-shadow: var(--shadow-soft-sm);
+    background: var(--white); border: 1.5px solid var(--lightgray); font-weight: 700;
 }
 .day-strip .d-tile .d-num{ font-family:'Nunito',sans-serif; font-size: 18px; line-height:1; font-weight: 800;}
 .day-strip .d-tile .d-name{ font-size: 10px; text-transform: uppercase; letter-spacing:.03em; margin-top:3px; color: var(--ink-soft); }
-.day-strip .d-tile:nth-child(3n+1){ background: var(--lime); }
-.day-strip .d-tile:nth-child(3n+2){ background: var(--lavender); }
-.day-strip .d-tile.today{ background: var(--ink) !important; }
+.day-strip .d-tile.today{ background: var(--ink); border-color: var(--ink); box-shadow: var(--shadow-soft-sm); }
 .day-strip .d-tile.today .d-num, .day-strip .d-tile.today .d-name{ color: var(--white); }
-
-/* ---------------- Stat cards / dashboard ---------------- */
-.grid-stats{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-bottom: 28px; }
-.stat-card{
-    background: var(--lime); border-radius: var(--radius-lg); padding: 24px;
-    box-shadow: var(--shadow-soft); position: relative; overflow:hidden;
-}
-.stat-card:nth-child(4n+2){ background: var(--pink); }
-.stat-card:nth-child(4n+3){ background: var(--sky); }
-.stat-card:nth-child(4n+4){ background: var(--lavender); }
-.stat-card .stat-num{ font-family:'Nunito',sans-serif; font-size: 38px; font-weight:800; }
-.stat-card .stat-label{ font-size: 13px; color: var(--ink); font-weight:600; margin-top:4px; opacity:.75;}
-.stat-card .stat-ico{ position:absolute; right:18px; top:18px; font-size: 24px; opacity:.55; }
 
 .section-title{ display:flex; align-items:center; justify-content:space-between; margin: 34px 0 16px; }
 .section-title h2{ font-size: 22px; }
 
-.cat-grid{ display:grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
-.cat-card{
-    background: var(--white); border-radius: var(--radius-lg); padding: 22px;
-    box-shadow: var(--shadow-soft-sm); transition: transform .15s, box-shadow .15s;
-    border-top: 8px solid var(--sky);
-}
-.cat-card:hover{ transform: translateY(-3px); box-shadow: var(--shadow-soft); }
-.cat-card .cat-ico{
-    font-size: 22px; width:46px; height:46px; display:flex; align-items:center; justify-content:center;
-    background: var(--offwhite); border-radius: 45% 55% 50% 50% / 55% 45% 55% 45%;
-}
-.cat-card h3{ font-size: 15.5px; margin: 12px 0 4px; }
-.cat-card p{ font-size: 12.5px; color: var(--ink-soft); font-weight: 600;}
-
 /* ---------------- Goal cards ---------------- */
 .goal-list{ display:flex; flex-direction:column; gap: 16px; }
 .goal-card{
-    background: var(--sky); border-radius: var(--radius-lg); padding: 22px 24px;
-    box-shadow: var(--shadow-soft); display:flex; align-items:center; gap: 20px;
+    /* v6: neutral by default (was: pastel-cycled by list position via
+       nth-child). A streak-at-risk state uses .goal-card.attention so the
+       same visual cue means the same thing everywhere it shows up. */
+    background: var(--white); border-radius: var(--radius-lg); padding: 22px 24px;
+    box-shadow: var(--shadow-soft-sm); border: 1.5px solid var(--lightgray);
+    display:flex; align-items:center; gap: 20px;
 }
-.goal-list .goal-card:nth-child(4n+1){ background: var(--sky); }
-.goal-list .goal-card:nth-child(4n+2){ background: var(--lavender); }
-.goal-list .goal-card:nth-child(4n+3){ background: var(--lime); }
-.goal-list .goal-card:nth-child(4n+4){ background: var(--white); }
+.goal-card.attention{ background: var(--attention-bg); border-color: var(--attention-border); }
 
 .streak-ring{ position:relative; width: 62px; height:62px; flex-shrink:0; }
 .streak-ring svg{ transform: rotate(-90deg); }
@@ -245,15 +251,13 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 }
 .toast.show{ opacity:1; transform: translateY(0); }
 
-/* ---------------- Responsive ---------------- */
+/* ---------------- Responsive — tablet tier (≤1000px) ---------------- */
 @media (max-width: 1000px){
     .app-shell{ grid-template-columns: 1fr; }
     .sidebar{ flex-direction: row; overflow-x:auto; align-items:center; border-right:none; border-bottom: 1.5px solid var(--lightgray); }
     .side-nav{ flex-direction:row; }
     .nav-label{ display:none; }
     .brand{ padding: 0 16px 0 0; }
-    .grid-stats{ grid-template-columns: repeat(2,1fr); }
-    .cat-grid{ grid-template-columns: repeat(2,1fr); }
     .auth-wrap{ grid-template-columns: 1fr; }
     .auth-art{ display:none; }
     .content{ padding: 20px; }
@@ -301,7 +305,6 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 
 .mood-cal{ display:grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
 .mood-cal .mc-day{ aspect-ratio: 1; border-radius: 10px; display:flex; align-items:center; justify-content:center; font-size:16px; background: var(--lightgray); }
-.mood-cal .mc-label{ font-size: 10px; text-align:center; color: var(--ink-soft); font-weight:700; text-transform:uppercase; }
 
 .tracker-row{ display:flex; align-items:center; justify-content:space-between; padding: 14px 0; border-bottom: 1px solid var(--lightgray); }
 .tracker-row:last-child{ border-bottom:none; }
@@ -380,13 +383,21 @@ input, select, textarea{ font-family: inherit; font-size: 15px; }
 .landing-cta p{ color: rgba(255,255,255,.7); margin-bottom: 26px; font-weight:500;}
 .landing-footer{ text-align:center; padding: 30px; color: var(--ink-soft); font-size:12.5px; font-weight:600;}
 
+/* ---------------- Responsive — tablet tier, part 2 (≤900px) ----------------
+   A separate query from the ≤1000px one above only because that's where the
+   4-col bento grid actually starts feeling cramped — kept as its own block
+   rather than merged, so a future width tweak to one doesn't silently move
+   the other. Cards keep their intent instead of all becoming "half width":
+   span-3/4 (a chart, a wide table) stay full-width even inside a 2-column
+   grid; span-2 already fills the row; span-1 pairs up two-per-row. */
 @media (max-width: 900px){
-    .bento-grid{ grid-template-columns: repeat(2,1fr); }
-    .bento-cell.span-2, .bento-cell.span-3, .bento-cell.span-4{ grid-column: span 2; }
+    .bento-grid{ grid-template-columns: repeat(2, 1fr); }
+    .bento-cell.span-3, .bento-cell.span-4{ grid-column: 1 / -1; }
     .badge-grid{ grid-template-columns: repeat(2,1fr); }
     .feature-grid, .testimonial-grid{ grid-template-columns: 1fr 1fr; }
     .landing-hero h1{ font-size: 38px; }
     .landing-nav, .landing-section{ padding-left: 24px; padding-right:24px; }
+    .donut-wrap{ flex-direction:column; align-items:flex-start; }
 }
 
 /* ============================================================
@@ -448,15 +459,13 @@ h4 .info-dot, label .info-dot{ text-transform:none; letter-spacing:normal; }
 .donut-legend .dl-row{ display:flex; align-items:center; gap:10px; font-size:13px; font-weight:700; }
 .donut-legend .dl-dot{ width:10px; height:10px; border-radius:50%; flex-shrink:0; }
 .donut-legend .dl-pct{ margin-left:auto; font-weight:800; }
-.donut-legend .dl-sub{ font-size:11px; color:var(--ink-soft); font-weight:600; }
 
-/* Habit overview list */
-.habit-ov-row{ display:flex; align-items:center; gap:14px; padding:13px 0; border-bottom:1px solid var(--lightgray); }
-.habit-ov-row:last-child{ border-bottom:none; }
-.habit-ov-row .ho-name{ flex:1; min-width:0; font-weight:700; font-size:13.5px; }
-.habit-ov-row .ho-name span{ display:block; font-size:11px; font-weight:600; color:var(--ink-soft); margin-top:1px; }
-.habit-ov-row .tracker-bar{ flex:1.6; max-width:190px; }
-.habit-ov-row .ho-streak{ display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:800; background: var(--offwhite); padding:5px 11px; border-radius:999px; white-space:nowrap; }
+/* Streak badge — used on the Goals list. (Was scoped as ".habit-ov-row
+   .ho-streak", a wrapper that list never actually had, so this rule never
+   matched and the badge rendered unstyled — fixed as part of removing
+   .habit-ov-row itself, which was Productivity Analysis's per-goal list,
+   now redundant with Habits and removed in the IA consolidation.) */
+.ho-streak{ display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:800; background: var(--offwhite); padding:5px 11px; border-radius:999px; white-space:nowrap; }
 
 /* Benchmark-preview banner — shown before a user has logged their own
    transactions, so the bundled dataset is still visibly "doing something" */
@@ -474,6 +483,132 @@ details.model-details .model-table{ width:100%; border-collapse:collapse; margin
 details.model-details .model-table th, details.model-details .model-table td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--lightgray); }
 details.model-details .model-table th{ color:var(--ink-soft); font-weight:700; text-transform:uppercase; font-size:10.5px; letter-spacing:.03em; }
 
-@media (max-width: 900px){
-    .donut-wrap{ flex-direction:column; align-items:flex-start; }
+/* ============================================================
+   v6 — Design tokens & semantic system (UX/IA redesign, Phase 1)
+   ----------------------------------------------------------------
+   Two rules the rest of the app now follows instead of ad hoc inline
+   styles:
+     1. TYPE SCALE — every "big number in a card" uses .stat-value
+        (28px) or .stat-value-sm (20px) instead of a hand-picked
+        px size (the old codebase had 38/34/30/26/22/20px versions of
+        the same element scattered across pages). Section/card titles
+        keep using the existing h2/h4 rules above, which already match
+        --font-h2 / --font-eyebrow.
+     2. SEMANTIC COLOR — .good / .attention are the ONLY two states
+        that carry meaning (on-track vs. needs-attention), applied as a
+        modifier class next to .bento-cell, .goal-card, .tag, or a bare
+        .text-good/.text-attention span — never assigned by a card's
+        position in a grid. Everything else defaults to neutral white/
+        off-white (see .bento-cell, .goal-card, .day-strip above).
+   These tokens are consumed by the reusable chart-card pattern (Phase 2)
+   and the Dashboard/Insights rebuild (Phase 3) — defined up front so
+   every phase after this one pulls from the same system.
+   ============================================================ */
+
+.stat-value{ font: var(--font-stat); }
+.timer-display{ font-family:'Nunito',sans-serif; font-weight:800; font-size:64px; margin-bottom:22px; }
+.stat-value-sm{ font: var(--font-stat-sm); }
+.eyebrow{ font: var(--font-eyebrow); text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); }
+.caption{ font: var(--font-caption); color: var(--ink-soft); }
+
+/* Semantic text color — e.g. a negative net-savings figure, a dropping trend */
+.text-good{ color: var(--good-ink) !important; }
+.text-attention{ color: var(--attention-ink) !important; }
+
+/* Semantic pill tag — modifies the existing neutral .goal-tag base */
+.goal-tag.tag-good{ background: var(--good-bg) !important; color: var(--good-ink) !important; }
+.goal-tag.tag-attention{ background: var(--attention-bg) !important; color: var(--attention-ink) !important; }
+
+/* Semantic card background — modifier for .bento-cell (used sparingly:
+   a genuinely at-risk or genuinely on-track callout, not decoration) */
+.bento-cell.good{ background: var(--good-bg); }
+.bento-cell.attention{ background: var(--attention-bg); }
+
+/* ============================================================
+   v6.1 — Shared "chart card" pattern (Phase 2)
+   One wrapper for every chart on every page: title row (h4 + optional
+   info-dot, styled by the existing .bento-cell h4 / .info-dot rules
+   above), an optional .chart-note line, a body of consistent minimum
+   size regardless of which svg_*_chart() helper filled it, and one
+   empty-state treatment. See includes/chart_card.php.
+   ============================================================ */
+.chart-card{ overflow: hidden; }
+.chart-card-body{ flex: 1; display:flex; flex-direction:column; justify-content:center; min-height: 200px; }
+.chart-card-body svg{ display:block; max-width:100%; }
+.chart-card-body.is-empty{ min-height: 160px; }
+.chart-card .chart-empty{ padding: 36px 16px; }
+.chart-card .chart-empty .em-ico{ font-size: 34px; margin-bottom: 8px; }
+.chart-card-footer{ margin-top: 14px; }
+
+/* Dashboard's "Today's check-ins" list — one row per pending goal, with
+   a pill-shaped check-in control that reuses the existing .day-box AJAX
+   handler in js/app.js (same click handler, same toggle_log.php call —
+   just styled as a pill instead of a circle since there's one per row,
+   not seven in a strip). */
+.pending-row{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:13px 0; border-bottom:1px solid var(--lightgray); }
+.pending-row:last-child{ border-bottom:none; }
+.pending-row .pending-title{ font-weight:700; font-size:13.5px; }
+.pending-row .pending-title .caption{ display:block; font-weight:600; margin-top:2px; }
+.day-box.checkin-pill{ width:auto; height:auto; padding:9px 18px; border-radius:999px; font-size:12px; flex-shrink:0; background: var(--offwhite); color: var(--ink); }
+.day-box.checkin-pill.done{ background: var(--good-bg); color: var(--good-ink); }
+.day-box.checkin-pill.done::after{ content:" ✓"; }
+
+.reminder-chip.tag-attention{ background: var(--attention-bg) !important; color: var(--attention-ink) !important; }
+
+/* ============================================================
+   v6.2 — Responsive, phone tier (≤640px) — Phase 5
+   ----------------------------------------------------------------
+   The ≤1000px and ≤900px tiers above handle the sidebar-to-topbar
+   switch and a 2-column grid reflow, which is enough down to tablet
+   width. Below ~640px a straight "2 columns → keep going" reflow
+   stops working — cards get too narrow to read, wide SVG charts
+   shrink their (viewBox-relative, not CSS-relative) text to
+   illegibility, and fixed-width strips (day-strip, week-check) start
+   wrapping into a jumble instead of just being what they are: a
+   horizontally-scrollable row on a small screen, same as any native
+   app's date picker.
+   ============================================================ */
+@media (max-width: 640px){
+    .content{ padding: 14px; }
+    .topbar{ padding: 16px 16px 0; }
+    .topbar-title{ font-size: 21px; }
+    .topbar-user .topbar-name{ display:none; } /* avatar + XP pill still show; name is redundant with the greeting on Dashboard */
+    .section-title{ flex-wrap:wrap; row-gap:10px; margin: 26px 0 14px; }
+    .section-title h2{ font-size: 19px; }
+
+    /* Every bento cell goes full-width, regardless of span — a span-2/3/4
+       card squeezed into a 2-column phone grid is just as unreadable as
+       the "everything becomes span-2" bug this whole pass is fixing. */
+    .bento-grid{ grid-template-columns: 1fr; gap: 14px; }
+    .bento-cell{ grid-column: 1 / -1; }
+    .badge-grid{ grid-template-columns: repeat(2, 1fr); }
+    .feature-grid, .testimonial-grid{ grid-template-columns: 1fr; }
+    .form-row{ grid-template-columns: 1fr; }
+    .modal-box{ padding: 22px; }
+    .landing-hero h1{ font-size: 28px; }
+
+    /* Fixed-width strips scroll horizontally instead of wrapping into a
+       cramped multi-row jumble. */
+    .day-strip{ flex-wrap:nowrap; overflow-x:auto; padding-bottom:6px; -webkit-overflow-scrolling:touch; }
+    .day-strip .d-tile{ flex-shrink:0; }
+    .week-check{ flex-wrap:wrap; }
+    .pending-row{ flex-wrap:wrap; row-gap:8px; }
+    .heatmap{ grid-template-columns: repeat(auto-fill, 11px); }
+    .heatmap .hm-cell{ width:11px; height:11px; }
+
+    /* Segmented tab bars (Insights, Finance, the category filter on
+       Habits) scroll rather than wrap into a second row, which reads
+       as broken for a tab control specifically. */
+    .seg-tabs{ max-width: 100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .seg-tabs button{ white-space:nowrap; padding:9px 16px; }
+
+    /* Wide SVG charts (line/scatter/grouped-bar — set via chart_card()'s
+       chart_width option): held at their natural size and the card
+       scrolls horizontally, instead of width:100% squashing a viewBox
+       built for ~640-1100 units down into a ~300px phone screen, which
+       would shrink the chart's (fixed, viewBox-relative) text well
+       below readable size. Donut/radar charts are unaffected — their
+       fixed aspect ratio already keeps them legible at any width. */
+    .chart-scroll{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .chart-scroll svg{ width: var(--chart-min-w, 480px); max-width:none; flex-shrink:0; }
 }
