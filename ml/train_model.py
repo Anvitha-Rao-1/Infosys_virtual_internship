@@ -64,9 +64,7 @@ from forecasting import (
     blend_category_shares,
     forecast_series,
     forecast_linear,
-    forecast_moving_average,
     forecast_arima,
-    forecast_holt_winters,
 )
 
 try:
@@ -85,7 +83,7 @@ DB_CONFIG = {
 
 FORECAST_MONTHS_AHEAD = 3
 FORECAST_WEEKS_AHEAD = 2
-DEFAULT_KAGGLE_PATH = os.path.join(os.path.dirname(__file__), "data", "finance_benchmark.xlsx")
+DEFAULT_KAGGLE_PATH = os.path.join(os.path.dirname(__file__), "data", "finance_benchmark.csv")
 DEFAULT_EST_MINUTES = 20  # matches the schema.sql column default
 
 
@@ -193,7 +191,16 @@ def fetch_weekly_activity(conn, user_id: int) -> pd.DataFrame:
     else:
         weekly["time_pct"] = 0.0
     weekly["productivity_score"] = (0.6 * weekly["completion_pct"] + 0.4 * weekly["time_pct"])
-    return weekly[["completion_pct", "time_pct", "productivity_score"]].sort_index()
+    weekly = weekly[["completion_pct", "time_pct", "productivity_score"]].sort_index()
+
+    # Drop the current, still-in-progress week (same reasoning as
+    # monthly_totals() in forecasting.py) — a week that's only 1-2 days old
+    # looks like completion crashed to near-zero, which then dominates
+    # backtest error with a spurious huge percentage miss on every model. A
+    # week only enters the series once it has actually finished (W-SUN).
+    if len(weekly) and pd.Timestamp.now().normalize() <= weekly.index[-1].end_time:
+        weekly = weekly.iloc[:-1]
+    return weekly
 
 
 def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
@@ -279,17 +286,14 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
         cash_flow_ci_lower.append(round(cf - margin_cf, 2))
         cash_flow_ci_upper.append(round(cf + margin_cf, 2))
 
-    # Side-by-side next-month prediction from EACH of the three candidate
-    # models (not just the winner) — lets the Forecast page show a real
-    # "Linear Regression vs Moving Average vs ARIMA" comparison table for
-    # Revenue/Expense/Profit/Profit Margin/Cash Flow, the same shape as a
-    # typical financial-forecasting dashboard.
+    # Side-by-side next-month prediction from EACH candidate model (not just
+    # the winner) — lets the Forecast page show a real "Linear Regression vs
+    # ARIMA" comparison table for Revenue/Expense/Profit/Profit Margin/Cash
+    # Flow, the same shape as a typical financial-forecasting dashboard.
     last_cash_flow = cash_flow_actual[-1] if cash_flow_actual else 0.0
     model_fns = {
         "linear_trend": forecast_linear,
-        "moving_average": forecast_moving_average,
         "arima": forecast_arima,
-        "holt_winters": forecast_holt_winters,
     }
     model_forecasts = {}
     for name, fn in model_fns.items():
@@ -392,10 +396,24 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
             "income_mae": income_mae,
             "income_rmse": income_rmse,
             "income_scores": income_scores,
+            "income_accuracy": (income_scores.get(income_method) or {}).get("accuracy"),
             "expense_method": expense_method,
             "expense_mae": expense_mae,
             "expense_rmse": expense_rmse,
             "expense_scores": expense_scores,
+            "expense_accuracy": (expense_scores.get(expense_method) or {}).get("accuracy"),
+            # Overall "finance accuracy" = average of the winning income and
+            # expense models' own accuracy (100% - MAPE each) — the single
+            # number to hold up against a finance-forecast accuracy target.
+            "finance_accuracy": (
+                round((
+                    (income_scores.get(income_method) or {}).get("accuracy", 0)
+                    + (expense_scores.get(expense_method) or {}).get("accuracy", 0)
+                ) / 2, 1)
+                if (income_scores.get(income_method) or {}).get("accuracy") is not None
+                and (expense_scores.get(expense_method) or {}).get("accuracy") is not None
+                else None
+            ),
         },
         "category_forecast_next_month": category_forecast,
         "category_shares_user_pct": category_shares_user_pct,
@@ -469,8 +487,22 @@ def build_habit_forecast(weekly: pd.DataFrame) -> dict:
         "model": {
             "completion_method": completion_method, "completion_mae": completion_mae, "completion_rmse": completion_rmse,
             "completion_scores": completion_scores,
+            "completion_accuracy": (completion_scores.get(completion_method) or {}).get("accuracy"),
             "productivity_method": prod_method, "productivity_mae": prod_mae, "productivity_rmse": prod_rmse,
             "productivity_scores": prod_scores,
+            "productivity_accuracy": (prod_scores.get(prod_method) or {}).get("accuracy"),
+            # Overall "habit accuracy" = average of the winning completion-rate
+            # and Productivity Score models' own accuracy — the single number
+            # to hold up against a habit-forecast accuracy target.
+            "habit_accuracy": (
+                round((
+                    (completion_scores.get(completion_method) or {}).get("accuracy", 0)
+                    + (prod_scores.get(prod_method) or {}).get("accuracy", 0)
+                ) / 2, 1)
+                if (completion_scores.get(completion_method) or {}).get("accuracy") is not None
+                and (prod_scores.get(prod_method) or {}).get("accuracy") is not None
+                else None
+            ),
         },
         "insights": insights,
     }

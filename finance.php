@@ -212,7 +212,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="coach-avatar" style="background: var(--ink); color: var(--lime);">🔮</div>
     <div style="flex:1;">
         <h3 style="color:var(--ink);">Financial Forecast</h3>
-        <p style="color:#3A3A45;">Four candidate models — Linear Regression, Moving Average, ARIMA and Holt-Winters — backtested on your own history; whichever predicted your recent months most accurately is used, and its own backtest error draws the shaded 95% confidence band on the chart below. No external AI API — every number traces back to <code>ml/forecasting.py</code>. Looking for productivity &amp; habit forecasts? Head to <a href="insights.php#forecast" style="color:var(--ink); text-decoration:underline;">Insights</a>.</p>
+        <p style="color:#3A3A45;">Two candidate models — Linear Regression and ARIMA — backtested on your own history; whichever predicted your recent months most accurately is used, and its own backtest error draws the shaded 95% confidence band on the chart below. No external AI API — every number traces back to <code>ml/forecasting.py</code>. Looking for productivity &amp; habit forecasts? Head to <a href="insights.php#forecast" style="color:var(--ink); text-decoration:underline;">Insights</a>.</p>
     </div>
     <button class="btn btn-ghost btn-sm" id="refreshBtn" onclick="refreshForecast()">↻ Retrain now</button>
 </div>
@@ -343,8 +343,8 @@ require_once __DIR__ . '/includes/header.php';
         <summary>Why these numbers? (model performance)</summary>
         <div style="overflow-x:auto;">
         <table class="model-table">
-            <tr><th>Model</th><th>Income MAE</th><th>Income RMSE</th><th>Income MAPE</th><th>Expense MAE</th><th>Expense RMSE</th><th>Expense MAPE</th></tr>
-            <?php foreach (['linear_trend', 'moving_average', 'arima', 'holt_winters'] as $m):
+            <tr><th>Model</th><th>Income MAE</th><th>Income RMSE</th><th>Income Accuracy</th><th>Expense MAE</th><th>Expense RMSE</th><th>Expense Accuracy</th></tr>
+            <?php foreach (['linear_trend', 'arima'] as $m):
                 $is = $finance['model']['income_scores'][$m] ?? null;
                 $es = $finance['model']['expense_scores'][$m] ?? null;
                 $is_income_winner = $finance['model']['income_method'] === $m;
@@ -354,21 +354,21 @@ require_once __DIR__ . '/includes/header.php';
                 <td><strong><?= method_label($m) ?></strong></td>
                 <td<?= $is_income_winner ? ' class="text-good" style="font-weight:800;"' : '' ?>><?= $is ? '₹' . $is['mae'] : '—' ?><?= $is_income_winner ? ' ✓' : '' ?></td>
                 <td><?= $is ? '₹' . $is['rmse'] : '—' ?></td>
-                <td><?= ($is && $is['mape'] !== null) ? $is['mape'] . '%' : '—' ?></td>
+                <td><?= ($is && $is['accuracy'] !== null) ? $is['accuracy'] . '%' : '—' ?></td>
                 <td<?= $is_expense_winner ? ' class="text-good" style="font-weight:800;"' : '' ?>><?= $es ? '₹' . $es['mae'] : '—' ?><?= $is_expense_winner ? ' ✓' : '' ?></td>
                 <td><?= $es ? '₹' . $es['rmse'] : '—' ?></td>
-                <td><?= ($es && $es['mape'] !== null) ? $es['mape'] . '%' : '—' ?></td>
+                <td><?= ($es && $es['accuracy'] !== null) ? $es['accuracy'] . '%' : '—' ?></td>
             </tr>
             <?php endforeach; ?>
         </table>
         </div>
-        <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">MAE/RMSE/MAPE come from backtesting: predicting the last few real months using only earlier months, then comparing to what actually happened. Lower is better on all three — ✓ marks the model actually used for the forecast above (income and expense are picked independently, since one series can be steadier than the other).</p>
+        <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">MAE/RMSE/Accuracy come from backtesting: predicting the last few real months using only earlier months, then comparing to what actually happened. Accuracy = 100% − MAPE (higher is better; MAE/RMSE lower is better) — ✓ marks the model actually used for the forecast above (income and expense are picked independently, since one series can be steadier than the other).</p>
     </details>
     <?php $income_expense_content = ob_get_clean(); ?>
     <div class="bento-grid">
     <?= chart_card([
         'title' => 'Income vs. expenses — actual &amp; forecast',
-        'info' => 'Backtested across four candidate models (Linear Regression, Moving Average, ARIMA, Holt-Winters). Whichever predicted recent months more accurately draws the dashed line.',
+        'info' => 'Backtested across two candidate models (Linear Regression, ARIMA). Whichever predicted recent months more accurately draws the dashed line.',
         'span' => 4,
         'note' => 'Solid = what you actually logged. Dashed = the model\'s projection. The shaded band is a 95% confidence interval built from the winning model\'s own backtest error — it widens the further out the forecast reaches, since next month is always a safer bet than three months from now.',
         'content' => $income_expense_content,
@@ -380,22 +380,23 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card anim-in" style="margin-bottom:24px;">
         <h4 style="text-transform:uppercase; font-size:13px; color:var(--ink-soft); letter-spacing:.04em; margin-bottom:4px;">
             Forecast summary — next month, by model
-            <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">What each of the four candidate models predicts for next month, side by side — not just the winner. The KPI cards above use whichever model backtested best for that specific metric.</span></span>
+            <span class="info-dot" tabindex="0" onclick="this.classList.toggle('open')">i<span class="tip">What each of the two candidate models predicts for next month, side by side — not just the winner. The KPI cards above use whichever model backtested best for that specific metric.</span></span>
         </h4>
+        <?php if (isset($finance['model']['finance_accuracy']) && $finance['model']['finance_accuracy'] !== null): ?>
+        <p style="font-size:13px; margin:2px 0 8px;">Overall finance forecast accuracy: <strong><?= $finance['model']['finance_accuracy'] ?>%</strong> <span style="color:var(--ink-soft); font-size:11.5px;">(average of the winning income and expense models' own backtest accuracy)</span></p>
+        <?php endif; ?>
         <div style="overflow-x:auto;">
-        <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; min-width:640px;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; min-width:400px;">
             <tr style="color:var(--ink-soft); font-weight:700; text-align:left;">
                 <th style="padding:4px 10px 8px;">Metric</th>
                 <th style="padding:4px 10px 8px;">Linear Regression</th>
-                <th style="padding:4px 10px 8px;">Moving Average</th>
                 <th style="padding:4px 10px 8px;">ARIMA</th>
-                <th style="padding:4px 10px 8px;">Holt-Winters</th>
             </tr>
-            <tr><td style="padding:7px 10px;">Revenue</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['revenue']) ?></td><td style="padding:7px 10px;"><?= money($mf['moving_average']['revenue']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['revenue']) ?></td><td style="padding:7px 10px;"><?= money($mf['holt_winters']['revenue']) ?></td></tr>
-            <tr><td style="padding:7px 10px;">Expense</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['expense']) ?></td><td style="padding:7px 10px;"><?= money($mf['moving_average']['expense']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['expense']) ?></td><td style="padding:7px 10px;"><?= money($mf['holt_winters']['expense']) ?></td></tr>
-            <tr><td style="padding:7px 10px;">Profit</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['profit']) ?></td><td style="padding:7px 10px;"><?= money($mf['moving_average']['profit']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['profit']) ?></td><td style="padding:7px 10px;"><?= money($mf['holt_winters']['profit']) ?></td></tr>
-            <tr><td style="padding:7px 10px;">Profit margin</td><td style="padding:7px 10px;"><?= $mf['linear_trend']['profit_margin'] ?>%</td><td style="padding:7px 10px;"><?= $mf['moving_average']['profit_margin'] ?>%</td><td style="padding:7px 10px;"><?= $mf['arima']['profit_margin'] ?>%</td><td style="padding:7px 10px;"><?= $mf['holt_winters']['profit_margin'] ?>%</td></tr>
-            <tr><td style="padding:7px 10px;">Cash flow (cumulative)</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['cash_flow']) ?></td><td style="padding:7px 10px;"><?= money($mf['moving_average']['cash_flow']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['cash_flow']) ?></td><td style="padding:7px 10px;"><?= money($mf['holt_winters']['cash_flow']) ?></td></tr>
+            <tr><td style="padding:7px 10px;">Revenue</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['revenue']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['revenue']) ?></td></tr>
+            <tr><td style="padding:7px 10px;">Expense</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['expense']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['expense']) ?></td></tr>
+            <tr><td style="padding:7px 10px;">Profit</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['profit']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['profit']) ?></td></tr>
+            <tr><td style="padding:7px 10px;">Profit margin</td><td style="padding:7px 10px;"><?= $mf['linear_trend']['profit_margin'] ?>%</td><td style="padding:7px 10px;"><?= $mf['arima']['profit_margin'] ?>%</td></tr>
+            <tr><td style="padding:7px 10px;">Cash flow (cumulative)</td><td style="padding:7px 10px;"><?= money($mf['linear_trend']['cash_flow']) ?></td><td style="padding:7px 10px;"><?= money($mf['arima']['cash_flow']) ?></td></tr>
         </table>
         </div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin-top:10px;">The KPI cards at the top of this tab use <strong><?= method_label($finance['model']['income_method']) ?></strong> for revenue and <strong><?= method_label($finance['model']['expense_method']) ?></strong> for expense — whichever backtested more accurately per the table above.</p>

@@ -188,24 +188,27 @@ if (!$habit || $habit['status'] !== 'ok') {
     <details class="model-details">
         <summary>Why these numbers? (model performance)</summary>
         <div style="overflow-x:auto;">
-        <table class="model-table" style="min-width:560px;">
-            <tr><th>Metric</th><th>Linear Regression</th><th>Moving Average</th><th>ARIMA</th><th>Holt-Winters</th><th>Winner</th></tr>
+        <table class="model-table" style="min-width:420px;">
+            <tr><th>Metric</th><th>Linear Regression</th><th>ARIMA</th><th>Winner</th></tr>
             <tr>
-                <td>Productivity score (MAE / RMSE)</td>
-                <?php foreach (['linear_trend', 'moving_average', 'arima', 'holt_winters'] as $m): $sc = $habit['model']['productivity_scores'][$m] ?? null; ?>
-                <td><?= $sc ? $sc['mae'] . ' / ' . $sc['rmse'] : '—' ?></td>
+                <td>Productivity score (MAE / RMSE / Accuracy)</td>
+                <?php foreach (['linear_trend', 'arima'] as $m): $sc = $habit['model']['productivity_scores'][$m] ?? null; ?>
+                <td><?= $sc ? $sc['mae'] . ' / ' . $sc['rmse'] . ' / ' . ($sc['accuracy'] !== null ? $sc['accuracy'] . '%' : '—') : '—' ?></td>
                 <?php endforeach; ?>
                 <td><?= method_label_ins($habit['model']['productivity_method']) ?></td>
             </tr>
             <tr>
-                <td>Completion % (MAE / RMSE)</td>
-                <?php foreach (['linear_trend', 'moving_average', 'arima', 'holt_winters'] as $m): $sc = $habit['model']['completion_scores'][$m] ?? null; ?>
-                <td><?= $sc ? $sc['mae'] . ' / ' . $sc['rmse'] : '—' ?></td>
+                <td>Completion % (MAE / RMSE / Accuracy)</td>
+                <?php foreach (['linear_trend', 'arima'] as $m): $sc = $habit['model']['completion_scores'][$m] ?? null; ?>
+                <td><?= $sc ? $sc['mae'] . ' / ' . $sc['rmse'] . ' / ' . ($sc['accuracy'] !== null ? $sc['accuracy'] . '%' : '—') : '—' ?></td>
                 <?php endforeach; ?>
                 <td><?= method_label_ins($habit['model']['completion_method']) ?></td>
             </tr>
         </table>
         </div>
+        <?php if (isset($habit['model']['habit_accuracy']) && $habit['model']['habit_accuracy'] !== null): ?>
+        <p style="font-size:13px; margin-top:8px;">Overall habit forecast accuracy: <strong><?= $habit['model']['habit_accuracy'] ?>%</strong> <span style="color:var(--ink-soft); font-size:11.5px;">(average of the winning completion-rate and Productivity Score models' own backtest accuracy)</span></p>
+        <?php endif; ?>
     </details>
     <?php $prod_trend_content = ob_get_clean();
     $prod_trend_empty_icon = null; $prod_trend_empty_message = null;
@@ -468,7 +471,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="bento-grid">
     <?= chart_card([
         'title' => 'Productivity trend — actual &amp; forecast',
-        'info' => 'Backtested across four candidate models (Linear Regression, Moving Average, ARIMA, Holt-Winters).',
+        'info' => 'Backtested across two candidate models (Linear Regression, ARIMA).',
         'span' => 4,
         'note' => $prod_trend_content ? 'Weeks run Monday–Sunday. Dashed points are the next two weeks, projected. The shaded band is a 95% confidence interval from the winning model\'s own backtest error.' : null,
         'content' => $prod_trend_content,

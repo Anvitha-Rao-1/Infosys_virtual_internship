@@ -10,24 +10,26 @@ download, or the synthetic one bundled at ml/data/finance_benchmark.xlsx —
 see ml/data/README_DATASET.md for how it was generated and how to swap in
 a real Kaggle CSV/XLSX instead).
 
-The methods used are intentionally simple and explainable — four candidate
+The methods used are intentionally simple and explainable — two candidate
 models are backtested per metric and whichever predicted the most recent
 real periods most accurately wins:
   - Linear Regression on a month/week index (captures an overall trend)
-  - Moving Average (captures "recent typical level", ignores trend)
-  - ARIMA(1,1,1) (captures autocorrelation the other two miss)
-  - Holt-Winters exponential smoothing, damped trend (weights recent
-    periods more heavily than a plain average, without a straight line's
-    tendency to overshoot)
+  - ARIMA(1,1,1) (captures autocorrelation a straight line misses)
+(Moving Average and Holt-Winters were dropped from the exposed comparison
+by request — Moving Average still exists as ARIMA's own internal fallback
+for short/non-converging series, it just never wins on its own.)
 A 95% confidence interval is also derived from each winning model's own
 backtest error, so every forecast line on the UI can be drawn with an
-honest uncertainty band instead of a single falsely-precise number.
+honest uncertainty band instead of a single falsely-precise number. Each
+candidate's backtest score also reports "accuracy" = 100% - MAPE (floored
+at 0%), the plain-language number shown alongside MAE/RMSE/MAPE.
 
 No black-box model, no external AI API call — every number on the
 Forecast page can be traced back to a function in this file.
 """
 
 from __future__ import annotations
+import warnings
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
@@ -47,8 +49,15 @@ _TYPE_CANDIDATES = ["income/expense", "income_expense", "type", "transaction_typ
 
 
 def _find_column(columns, candidates):
-    lower_map = {c.lower().strip(): c for c in columns}
+    # Normalize both sides the same way (lowercase, underscores==spaces) so
+    # a header like "Transaction Type" matches a candidate written
+    # "transaction_type" — found via a real dataset where this exact mismatch
+    # silently left the type column undetected (everything defaulted to
+    # "expense", including real income rows).
+    norm = lambda s: s.lower().strip().replace("_", " ")
+    lower_map = {norm(c): c for c in columns}
     for cand in candidates:
+        cand = norm(cand)
         if cand in lower_map:
             return lower_map[cand]
     return None
@@ -88,11 +97,24 @@ def load_kaggle_dataset(path: str) -> pd.DataFrame:
         )
 
     df = pd.DataFrame()
-    # Kaggle finance CSVs mix date formats (DD/MM/YYYY is common outside the US).
-    # Try the default parse, and fall back to dayfirst if that leaves too many
-    # unparseable rows — whichever interpretation loses fewer rows wins.
-    parsed_default = pd.to_datetime(raw[date_col], errors="coerce", dayfirst=False)
-    parsed_dayfirst = pd.to_datetime(raw[date_col], errors="coerce", dayfirst=True)
+    # Kaggle finance CSVs mix date formats (DD/MM/YYYY is common outside the US) —
+    # and often mix *granularity* too (some rows carry a HH:MM:SS timestamp,
+    # some are date-only, e.g. "20/09/2018 12:04:08" next to "19/09/2018").
+    # pd.to_datetime() on the whole column at once infers one format from the
+    # first value and silently returns NaT for every row that doesn't match
+    # it — on a real export this has been observed to drop ~47% of otherwise
+    # perfectly valid rows with zero warning. Parsing element-by-element
+    # avoids that (slower, but these benchmark files are a few thousand rows
+    # at most). We still try both dayfirst interpretations and keep whichever
+    # loses fewer rows, for files where day/month order is genuinely ambiguous.
+    with warnings.catch_warnings():
+        # pandas warns when dayfirst=True is passed but every value happens
+        # to be unambiguous (e.g. an already-ISO YYYY-MM-DD column) — harmless
+        # here since we're deliberately trying both interpretations and
+        # keeping whichever parses more rows.
+        warnings.simplefilter("ignore", UserWarning)
+        parsed_default = raw[date_col].apply(lambda v: pd.to_datetime(v, dayfirst=False, errors="coerce"))
+        parsed_dayfirst = raw[date_col].apply(lambda v: pd.to_datetime(v, dayfirst=True, errors="coerce"))
     df["date"] = parsed_default if parsed_default.isna().sum() <= parsed_dayfirst.isna().sum() else parsed_dayfirst
     df["category"] = raw[cat_col].astype(str).str.strip().str.title() if cat_col else "Other"
     df["amount"] = pd.to_numeric(raw[amt_col], errors="coerce").abs()
@@ -118,6 +140,13 @@ def monthly_totals(df: pd.DataFrame) -> pd.DataFrame:
     df must have columns: date, amount, type.
     Returns a DataFrame indexed by month (Period), columns: income, expense.
     Months with no rows of a given type are filled with 0.
+
+    The current, still-in-progress month (if any rows fall in it) is dropped
+    from the result — including it as if it were a complete month makes it
+    look like spending/income crashed to a fraction of normal (e.g. 7 days
+    of a 30-day month), which then dominates backtest error with a spurious
+    huge percentage miss on every model. A month only enters the series once
+    it has actually finished.
     """
     if df.empty:
         return pd.DataFrame(columns=["income", "expense"])
@@ -127,7 +156,10 @@ def monthly_totals(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["income", "expense"]:
         if col not in pivot.columns:
             pivot[col] = 0.0
-    return pivot[["income", "expense"]].sort_index()
+    pivot = pivot[["income", "expense"]].sort_index()
+    if len(pivot) and pd.Timestamp.now().normalize() <= pivot.index[-1].end_time:
+        pivot = pivot.iloc[:-1]
+    return pivot
 
 
 def category_shares(df: pd.DataFrame, type_filter: str = "expense") -> dict:
@@ -193,14 +225,15 @@ def forecast_moving_average(series: pd.Series, periods: int, window: int = 3) ->
 
 def forecast_arima(series: pd.Series, periods: int) -> np.ndarray:
     """
-    A basic ARIMA(1,1,1) model (statsmodels) — the third candidate model
-    alongside Linear Regression and Moving Average, so the Forecast page can
-    show a real multi-model comparison (a common ask: "why not compare more
-    than one model?"). ARIMA needs a bit more history than the other two to
-    fit sensibly, and can fail to converge on short/flat/noisy series — both
-    cases fall back to the Moving Average projection rather than erroring
-    out or returning nonsense, since a silent bad forecast is worse than a
-    plain one.
+    A basic ARIMA(1,1,1) model (statsmodels) — the second candidate model
+    alongside Linear Regression (Moving Average and Holt-Winters were dropped
+    from the exposed comparison; only these two are backtested/shown now).
+    ARIMA needs a bit of history to fit sensibly, and can fail to converge on
+    short/flat/noisy series — both cases fall back to a plain Moving Average
+    internally rather than erroring out or returning nonsense, since a
+    silent bad forecast is worse than a plain one. This fallback is an
+    internal safety net only — Moving Average is never itself reported as
+    the winning method.
     """
     y = series.values.astype(float)
     if len(y) < 6:
@@ -213,39 +246,6 @@ def forecast_arima(series: pd.Series, periods: int) -> np.ndarray:
             model = ARIMA(y, order=(1, 1, 1))
             fitted = model.fit()
             preds = fitted.forecast(steps=periods)
-        preds = np.asarray(preds, dtype=float)
-        if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
-            return forecast_moving_average(series, periods)
-        return np.clip(preds, 0, None)
-    except Exception:
-        return forecast_moving_average(series, periods)
-
-
-def forecast_holt_winters(series: pd.Series, periods: int) -> np.ndarray:
-    """
-    Holt-Winters double exponential smoothing (statsmodels), with a damped
-    trend — the fourth candidate model alongside Linear Regression, Moving
-    Average and ARIMA. Where a straight Linear Regression line extrapolates
-    a trend forever (and can overshoot badly on a short noisy history),
-    Holt-Winters weights recent observations more heavily and damps the
-    trend as it projects further out, which tends to track real habit/
-    spending data — that rarely moves in a perfectly straight line — more
-    accurately. Needs a little history to fit; falls back to the Moving
-    Average projection on short series or if it fails to converge, same
-    philosophy as forecast_arima() above.
-    """
-    y = series.values.astype(float)
-    if len(y) < 4:
-        return forecast_moving_average(series, periods)
-    try:
-        import warnings as _warnings
-        from statsmodels.tsa.holtwinters import ExponentialSmoothing
-        with _warnings.catch_warnings():
-            _warnings.simplefilter("ignore")
-            damped = len(y) >= 6
-            model = ExponentialSmoothing(y, trend="add", damped_trend=damped, seasonal=None)
-            fitted = model.fit(optimized=True)
-            preds = fitted.forecast(periods)
         preds = np.asarray(preds, dtype=float)
         if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
             return forecast_moving_average(series, periods)
@@ -294,31 +294,41 @@ def _mape(a, b):
     return float(np.mean(np.abs((a[mask] - b[mask]) / a[mask])) * 100)
 
 
+def _accuracy(mape):
+    """"Accuracy" as shown on the UI/reports: 100% - MAPE, floored at 0 so a
+    wildly-off backtest reads as 0% rather than a confusing negative number.
+    None (no MAPE available, e.g. too little history) stays None."""
+    return None if mape is None else round(max(0.0, 100.0 - mape), 1)
+
+
 def backtest_and_pick_best(series: pd.Series):
     """
     Holds out up to the last 3 months (or fewer if not enough history),
-    re-fits each of FOUR candidate models on everything before, and scores
-    them against the real values: Linear Regression, Moving Average, ARIMA,
-    and Holt-Winters. Returns (best_method_name, best_mae, best_rmse,
-    all_scores) where all_scores = {"linear_trend": {"mae":.., "rmse":..,
-    "mape":..}, ...} — kept for ALL candidates (not just the winner) so the
-    UI can show a transparent side-by-side comparison, not just a single
-    number to trust. Falls back gracefully with tiny histories.
+    re-fits each of TWO candidate models on everything before, and scores
+    them against the real values: Linear Regression and ARIMA (Moving
+    Average and Holt-Winters were dropped from the exposed comparison by
+    request — Moving Average still exists as ARIMA's own internal fallback
+    for short/non-converging series, it's just never reported as a winner
+    itself). Returns (best_method_name, best_mae, best_rmse, all_scores)
+    where all_scores = {"linear_trend": {"mae":.., "rmse":.., "mape":..,
+    "accuracy":..}, "arima": {...}} — kept for BOTH candidates (not just the
+    winner) so the UI can show a transparent side-by-side comparison, not
+    just a single number to trust. Falls back gracefully with tiny histories.
     """
     y = series.values.astype(float)
     if len(y) < 4:
-        # A line fit (or ARIMA/Holt-Winters) through 2-3 points extrapolates
-        # unstably (a single big swing can send the projection to zero or
-        # beyond) — moving_average is the safe default until there's enough
-        # history.
-        return ("moving_average", None, None, {})
+        # A line fit (or ARIMA) through 2-3 points extrapolates unstably (a
+        # single big swing can send the projection to zero or beyond) — but
+        # with only Linear Regression and ARIMA on the table, and ARIMA
+        # itself requiring >=6 points, Linear Regression is the only one
+        # that degrades gracefully on a tiny series, so it's the default
+        # here rather than a separate "moving_average" label.
+        return ("linear_trend", None, None, {})
     n_holdout = min(3, len(y) - 2)
 
     methods = {
         "linear_trend": lambda train, k: forecast_linear(pd.Series(train), k),
-        "moving_average": lambda train, k: forecast_moving_average(pd.Series(train), k),
         "arima": lambda train, k: forecast_arima(pd.Series(train), k),
-        "holt_winters": lambda train, k: forecast_holt_winters(pd.Series(train), k),
     }
     scores = {name: {"actual": [], "pred": []} for name in methods}
 
@@ -336,7 +346,11 @@ def backtest_and_pick_best(series: pd.Series):
         mae = _mae(s["actual"], s["pred"])
         rmse = _rmse(s["actual"], s["pred"])
         mape = _mape(s["actual"], s["pred"])
-        all_scores[name] = {"mae": round(mae, 2), "rmse": round(rmse, 2), "mape": round(mape, 1) if mape is not None else None}
+        all_scores[name] = {
+            "mae": round(mae, 2), "rmse": round(rmse, 2),
+            "mape": round(mape, 1) if mape is not None else None,
+            "accuracy": _accuracy(mape),
+        }
         if best_mae is None or mae < best_mae:
             best_name, best_mae, best_rmse = name, mae, rmse
 
@@ -352,12 +366,8 @@ def forecast_series(series: pd.Series, periods: int):
     all_scores, ci_lower: list[float|None], ci_upper: list[float|None]).
     """
     method_name, mae, rmse, all_scores = backtest_and_pick_best(series)
-    if method_name == "moving_average":
-        preds = forecast_moving_average(series, periods)
-    elif method_name == "arima":
+    if method_name == "arima":
         preds = forecast_arima(series, periods)
-    elif method_name == "holt_winters":
-        preds = forecast_holt_winters(series, periods)
     else:
         preds = forecast_linear(series, periods)
     preds = [round(float(p), 2) for p in preds]

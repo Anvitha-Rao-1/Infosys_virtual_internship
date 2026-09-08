@@ -881,14 +881,15 @@ function weekday_productivity_scores($pdo, $uid, $weeks = 8) {
 /* ============================================================
    Phase 4 — richer chart types (radar, scatter-with-trend-line,
    grouped SVG bars) and the extra queries that feed them, plus a
-   shared label helper for the 4-model forecast comparison tables.
+   shared label helper for the model forecast comparison tables.
    ============================================================ */
 
-// Shared label for a forecasting method code — used by forecast.php and
-// productivity.php's "why these numbers?" model comparison tables so both
-// pages describe the same four candidate models the same way.
+// Shared label for a forecasting method code — used by finance.php and
+// insights.php's "why these numbers?" model comparison tables so both
+// pages describe the same two candidate models (Linear Regression, ARIMA)
+// the same way.
 function forecast_method_label($m) {
-    $map = ['arima' => 'ARIMA', 'holt_winters' => 'Holt-Winters'];
+    $map = ['arima' => 'ARIMA'];
     if (isset($map[$m])) return $map[$m];
     return $m ? ucwords(str_replace('_', ' ', $m)) : '—';
 }
