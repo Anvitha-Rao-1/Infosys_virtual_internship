@@ -165,6 +165,38 @@ CREATE TABLE IF NOT EXISTS reminders (
     FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL
 );
 
+-- ---------- Financial goals (savings, emergency fund, debt payoff, etc.) ----------
+CREATE TABLE IF NOT EXISTS financial_goals (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    goal_type ENUM('savings','emergency_fund','debt_payoff','investment',
+                    'purchase','education','travel','income_target') DEFAULT 'savings',
+    title VARCHAR(150) NOT NULL,
+    target_amount DECIMAL(12,2) NOT NULL,
+    starting_amount DECIMAL(12,2) DEFAULT 0,
+    start_date DATE NOT NULL,
+    target_date DATE NOT NULL,
+    is_active TINYINT(1) DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ---------- Contributions toward a financial goal ----------
+-- current_amount is never stored on financial_goals directly — it's always
+-- starting_amount + SUM(goal_contributions.amount), same "derived live,
+-- never drifts" philosophy as XP in includes/helpers.php.
+CREATE TABLE IF NOT EXISTS goal_contributions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    goal_id INT NOT NULL,
+    user_id INT NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    contributed_at DATE NOT NULL,
+    note VARCHAR(200) DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (goal_id) REFERENCES financial_goals(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- ---------- Forecast cache: latest ML output per user, per domain ----------
 -- Written by ml/train_model.py, read (never written) by forecast.php.
 -- One row per (user, forecast_type) — retraining overwrites it in place.

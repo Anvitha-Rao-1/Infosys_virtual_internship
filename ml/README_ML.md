@@ -1,39 +1,54 @@
-# Forecasting & Predictive Analytics — setup (one-time)
+# Forecasting & Predictive Analytics — documentation
 
-This adds a **Finance** page (log income/expenses) and a two-tab
-**Forecast** page to Sprout — this is the Milestone 2 deliverable:
-*Implement financial forecasting models · Develop productivity and habit
-analysis engine · Generate future trend predictions.* The forecasting
-itself runs in Python — the PHP app never needs Python to be *running*,
-only to have been *run once* to fill in the `forecast_cache` table.
+Sprout has **two separate, independent forecasting engines** — different
+languages, different data, different math, on purpose:
 
-## What model is this, really?
+| | Engine A — Finance & Habit Forecasting | Engine B — Financial Goal Forecasting |
+|---|---|---|
+| Where | `ml/forecasting.py` + `ml/train_model.py` (Python) | `includes/helpers.php` (PHP) |
+| Predicts | next month's income/expense/profit/cash-flow; next week's completion % / Productivity Score | a savings/debt/investment goal's completion date, risk level, required pace |
+| Run when | manually (`python train_model.py`) or via the "↻ Retrain now" button | live, on every page load — no retraining step, always current |
+| Method | 2 candidate models, backtested, best one wins | single pace-projection formula with a variability-derived band |
+| Shown on | Finance → Forecast tab, Productivity Analysis, Dashboard | Finance → Goals tab |
 
-Nothing fancy, and that's on purpose — it's explainable and you can defend
-every number in a viva:
+Both are deliberately simple, explainable math — not a black box — so
+every number on the page can be traced back to a specific function and
+defended in a report or viva. Neither calls an external AI API.
+
+---
+
+## Engine A — Finance & Habit Forecasting (Python)
+
+This is the Milestone 2 deliverable: *Implement financial forecasting
+models · Develop productivity and habit analysis engine · Generate future
+trend predictions.* It runs in Python — the PHP app never needs Python to
+be *running*, only to have been *run once* to fill in the
+`forecast_cache` table, which `finance.php`/`insights.php` simply read.
+
+### What model is this, really?
 
 - **Linear Regression** (scikit-learn) fitted on your month-by-month (or
   week-by-week, for habits) totals, to project a trend forward.
-- **Moving Average** as a second candidate.
-- **ARIMA(1,1,1)** (via `statsmodels`) as a third candidate — a classic
-  time-series model that looks at how each period differs from the one
-  before it, rather than just fitting a straight line. It needs at least
-  6 periods of history to fit; with less than that it silently falls back
-  to Moving Average rather than erroring.
-- **Holt-Winters exponential smoothing** (damped trend, via `statsmodels`)
-  as a fourth candidate — weights recent periods more heavily than a plain
-  average, and damps its trend the further out it projects, which tends to
-  track real habit/spending data (rarely a perfectly straight line) more
-  accurately than Linear Regression alone. Falls back to Moving Average on
-  short or non-converging series, same philosophy as ARIMA above.
-- A **backtest** (predict the last few real periods using only earlier
-  ones, compare to what actually happened) picks whichever of the four
-  was more accurate — that's where the MAE, RMSE *and* MAPE numbers on
-  the Forecast page come from, for *all four* candidates side-by-side
-  (see the "Why these numbers?" disclosure under each chart), not just
-  the winner. Income and expense each pick their own best model
-  independently — it's common for one to be better predicted by ARIMA
-  and the other by Linear Regression or Holt-Winters.
+- **ARIMA(1,1,1)** (via `statsmodels`) — a classic time-series model that
+  looks at how each period differs from the one before it, rather than
+  just fitting a straight line. It needs at least 6 periods of history to
+  fit; with less than that (or if it fails to converge) it silently falls
+  back to a plain **Moving Average** internally rather than erroring —
+  Moving Average is only ever an internal safety net, never itself
+  reported as the winning method.
+- A **backtest** (`backtest_and_pick_best()` in `forecasting.py`) holds
+  out the last up to 3 real periods, refits each of the two candidates on
+  everything before, and scores their predictions against what actually
+  happened. Whichever has the lower MAE wins and is used to forecast
+  forward on the full series — that's where the MAE, RMSE *and* MAPE
+  numbers on the Forecast page come from, for *both* candidates
+  side-by-side (see the "Why these numbers?" disclosure under each
+  chart), not just the winner. Income and expense each pick their own
+  best model independently — it's common for one to be better predicted
+  by ARIMA and the other by Linear Regression. Series with fewer than 4
+  points skip backtesting entirely and default to Linear Regression,
+  since a line fit through 2-3 points is the only one of the two that
+  degrades gracefully on that little data.
 - A **95% confidence interval** is derived from the winning model's own
   backtest RMSE (`confidence_interval()` in `forecasting.py`), widening by
   `sqrt(step)` the further out the forecast reaches under the standard
@@ -53,6 +68,14 @@ every number in a viva:
   ARIMA via `statsmodels` gives the same "real time-series model, not
   just a straight line" story for the report, installs cleanly with one
   `pip install`, and is what's used here instead.
+
+  **Why not Moving Average or Holt-Winters as their own exposed
+  candidates?** An earlier version of this engine backtested four
+  candidates (Linear Regression, Moving Average, ARIMA, Holt-Winters).
+  Moving Average and Holt-Winters were dropped from the exposed
+  comparison by request — simpler is easier to defend, and Moving
+  Average still does real work as ARIMA's internal fallback above, it
+  just never wins on its own anymore.
 - **Financial forecasting**: your own transaction **category split** (e.g.
   how much of your spending is Food vs Rent) is blended with the same
   split computed from a **benchmark finance dataset**, weighted so it
@@ -69,7 +92,7 @@ every number in a viva:
   the goal) × how many times you checked in, versus what all your active
   goals would take if you hit every one, every day. That score (and your
   plain completion %) is forecast forward with the same backtested
-  four-model approach — no benchmark dataset involved here, since this is
+  two-model approach — no benchmark dataset involved here, since this is
   inherently personal behavioural data. The
   rest of the Productivity & Habits tab (habit-by-habit streaks, time
   allocation by category, best/worst category, most consistent weekday)
@@ -91,16 +114,16 @@ every number in a viva:
   logged via the Focus Sessions timer that week — so a user who has
   started timing their sessions gets credit for their real time, not just
   the rough estimate.
-- **Forecast Summary, by model** (new): alongside the "this month vs.
-  next month" table, the Forecast page now has a second table showing
-  what *each* of the four candidate models (Linear Regression, Moving
-  Average, ARIMA, Holt-Winters) individually predicts for next month's
-  revenue, expense, profit, profit margin and cumulative cash flow —
-  computed in `build_finance_forecast()` in `train_model.py` and cached
-  under the `model_forecasts_next_month` key. This is what actually gets
-  used to pick the KPI cards at the top of the page (whichever model
-  backtested more accurately per the MAE/RMSE/MAPE table wins), laid out
-  so you can see all four side-by-side rather than just the winner.
+- **Forecast Summary, by model**: alongside the "this month vs.
+  next month" table, the Forecast page has a second table showing
+  what *each* of the two candidate models (Linear Regression, ARIMA)
+  individually predicts for next month's revenue, expense, profit,
+  profit margin and cumulative cash flow — computed in
+  `build_finance_forecast()` in `train_model.py` and cached under the
+  `model_forecasts_next_month` key. This is what actually gets used to
+  pick the KPI cards at the top of the page (whichever model backtested
+  more accurately per the MAE/RMSE/MAPE table wins), laid out so you can
+  see both side-by-side rather than just the winner.
 - **Richer chart types** (new): besides the actual/forecast line charts
   (now with confidence bands), `includes/helpers.php` has a radar/spider
   chart (`svg_radar_chart()` — category performance this week vs. last
@@ -124,12 +147,14 @@ every number in a viva:
 
 No external AI API is called anywhere in this feature.
 
-## 1. Install Python (skip if already installed)
+### Setup (one-time)
+
+### 1. Install Python (skip if already installed)
 
 Download from https://python.org (3.9+). During install, tick **"Add
 python.exe to PATH"**.
 
-## 2. Install the Python packages
+### 2. Install the Python packages
 
 Open a terminal (Command Prompt / PowerShell), then:
 
@@ -138,7 +163,7 @@ cd C:\xampp\htdocs\habit-tracker\ml
 pip install -r requirements.txt
 ```
 
-## 3. The benchmark dataset — already included
+### 3. The benchmark dataset — already included
 
 `ml/data/finance_benchmark.xlsx` ships with the project, so there's
 nothing to download to get started. **It's a synthetic dataset built to
@@ -169,7 +194,7 @@ the file extension.)
 > `forecasting.py` and add your file's exact header name to the matching
 > `_..._CANDIDATES` list near the top.
 
-## 4. Log a bit of your own data
+### 4. Log a bit of your own data
 
 In the app, add a handful of transactions on the **Finance** page (a
 mix of income and expense, spread across a couple of different dates is
@@ -180,7 +205,7 @@ after updating, every goal (new or existing) has a **"typical time per
 check-in"** field (defaults to 20 minutes) — set it honestly per goal, it
 directly feeds the Productivity Score and Time Allocation chart.
 
-## 5. Run the training script
+### 5. Run the training script
 
 ```
 cd C:\xampp\htdocs\habit-tracker\ml
@@ -192,16 +217,117 @@ dataset, computes a forecast for every registered user, and writes the
 results into the `forecast_cache` table. You'll see a short summary print
 for each user.
 
-## 6. View it
+### 6. View it
 
-Go to `http://localhost/habit-tracker/forecast.php`. There's also a
-"↻ Retrain now" button on that page that tries to re-run the script for
-you automatically (via PHP's `shell_exec`) — if your XAMPP setup has that
-disabled, it'll tell you to just re-run step 5 manually, which always
-works.
+Go to `http://localhost/habit-tracker/finance.php#forecast` (Finance and
+Forecast are now one page, two tabs — "This Month" / "Goals" / "Forecast").
+There's also a "↻ Retrain now" button on that tab that tries to re-run the
+script for you automatically (via PHP's `shell_exec`) — if your XAMPP
+setup has that disabled, it'll tell you to just re-run step 5 manually,
+which always works.
 
-## Re-running later
+### Re-running Engine A
 
 Nothing here updates automatically — re-run `python train_model.py`
 any time you've added more transactions or check-ins (e.g. right before a
 demo) so the forecast reflects your latest data.
+
+---
+
+## Engine B — Financial Goal Forecasting (PHP)
+
+Powers the **Finance → Goals** tab: per-goal savings/debt-payoff/
+investment/etc. targets (`financial_goals` table), each with a **Goal
+Achievement Forecast**. Unlike Engine A, this needs no training step and
+no Python — it's plain PHP, recomputed fresh on every page load from
+`goal_contributions`, so it's always exactly as current as your last
+logged contribution. All of it lives in `includes/helpers.php`.
+
+### Why a different, simpler method here?
+
+Engine A's backtest-and-pick-winner approach needs several periods of
+history per series to be meaningful. A single financial goal realistically
+has a handful of contributions, not months of daily data — not enough to
+fairly backtest Linear Regression against ARIMA. Rather than force a
+method that needs more data than a goal will ever realistically have,
+Engine B uses a **pace-projection** approach: the same idea a person does
+in their head ("I've been saving about ₹4,000/month, I need ₹40,000 more,
+so about 10 months to go") formalized with an honest uncertainty band.
+
+### The math, step by step (`build_goal_forecast()`)
+
+1. **Current amount** = `starting_amount` (what you had saved when you
+   created the goal) + the sum of every logged `goal_contributions` row.
+   This is never stored on the goal itself — always recomputed — so it
+   can never drift out of sync with the real contribution history (same
+   "derive, don't store" approach `user_xp()` uses for gamification XP).
+2. **Average monthly pace** = the mean of your monthly contribution totals
+   over the last up to 6 months.
+3. **Variability** = the standard deviation of those same monthly totals.
+4. **Projected completion date** = today + however many months it takes
+   the *remaining* amount (`target − current`) to be covered at the
+   average pace.
+5. **Best-case / worst-case dates** = the same projection re-run at
+   `avg + 1 stdev` (faster pace → sooner) and `avg − 1 stdev` (slower pace
+   → later). A goal contributed to consistently gets a tight best/worst
+   band; one contributed to erratically gets an honestly wide one — the
+   same philosophy as Engine A's confidence intervals, just built from a
+   monthly standard deviation instead of a backtest RMSE.
+6. **Risk label** (Low / Medium / High) compares the expected and
+   worst-case dates against your actual deadline (`target_date`):
+   - **Low** — expected date is on/before the deadline, and even the
+     worst case lands within 30 days of it.
+   - **Medium** — expected date might miss, but the best case still makes
+     the deadline.
+   - **High** — even the best-case pace doesn't reach the deadline.
+7. **Velocity trend** (accelerating / steady / slowing) compares the first
+   half of your contribution window's average to the second half's — a
+   >15% swing either way is called out.
+8. **Required monthly pace** = the remaining amount ÷ months left until
+   the deadline — the number shown as "needed to stay on track", and used
+   in the recommendation insight when your current pace won't get you
+   there.
+9. **Abandonment flag** — separate from the pace-based risk label: if it's
+   been 45+ days since your last logged contribution, the goal is flagged
+   as possibly stalling, regardless of what the pace math says (a goal you
+   stopped touching entirely is a different problem from one you're just
+   contributing to slowly).
+10. **Burn-down / projection chart series** — the same history + forecast
+    + confidence-band shape Engine A's `svg_line_chart()` already draws,
+    just fed goal-balance numbers instead of income/expense numbers:
+    solid = your real cumulative balance so far, dashed = projected at
+    average pace, shaded band = the best/worst-case pace projection.
+
+### Financial Health Score (`financial_health_score()`)
+
+A single 0-100 number shown at the top of the Goals tab, blending four
+plain-arithmetic sub-scores (not a trained model):
+
+| Component | Weight | How it's computed |
+|---|---|---|
+| Savings consistency | 30% | % of the last 6 months that ended with income ≥ expense |
+| Spending behaviour | 25% | 100 − (% of those months where expense > income) |
+| Goal progress | 25% | average `current_amount / target_amount` across your active financial goals |
+| Income stability | 20% | 100 − coefficient of variation of monthly income (steady income scores high, spiky income scores low) |
+
+Any component that can't be computed yet (e.g. no goals yet, or only one
+month of income logged) is dropped and the remaining weights are
+renormalized — so a new user still gets a meaningful score from whatever
+data they do have, rather than a broken one.
+
+### Scenario Simulator
+
+The "what if?" box on each goal card (`runScenario()` in `finance.php`)
+re-runs step 4's exact projection **client-side in JavaScript**, with your
+hypothetical extra ₹/month added to the average pace and N months zeroed
+out to simulate missed contributions — no server round-trip, since it's
+the same simple arithmetic the PHP side already computed. This is the
+"What if I save ₹500 more/week" / "What if I miss 2 months" style
+what-if exploration.
+
+### No retraining needed
+
+Because Engine B is computed live from `goal_contributions` on every page
+load, there is no equivalent of "run train_model.py" for it — add a
+contribution on the Goals tab and every number (forecast, risk label,
+chart, health score) updates immediately on the next page load.

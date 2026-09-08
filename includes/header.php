@@ -31,9 +31,9 @@ $level_info = isset($user['id']) ? user_level_info($pdo, $user['id']) : null;
             <a href="mood.php" class="<?= $active === 'mood' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('smile') ?></span> Mood Tracker</a>
             <a href="focus.php" class="<?= $active === 'focus' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('clock') ?></span> Focus Sessions</a>
             <a href="goals.php" class="<?= $active === 'goals' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('target') ?></span> Goals</a>
-            <div class="nav-label">Analyze</div>
-            <a href="insights.php" class="<?= $active === 'insights' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('bar-chart') ?></span> Insights</a>
             <a href="finance.php" class="<?= $active === 'finance' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('dollar-sign') ?></span> Finance</a>
+            <div class="nav-label">Analyze</div>
+            <a href="analyse.php" class="<?= $active === 'analyse' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('bar-chart') ?></span> Analyse</a>
             <div class="nav-label">Plan</div>
             <a href="calendar.php" class="<?= $active === 'calendar' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('calendar') ?></span> Calendar View</a>
             <a href="reminders.php" class="<?= $active === 'reminders' ? 'active' : '' ?>"><span class="nav-ico"><?= icon('bell') ?></span> Reminders</a>

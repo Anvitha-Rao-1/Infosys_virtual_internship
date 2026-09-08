@@ -46,7 +46,13 @@ if (!$habit_ready) {
         'Productivity score' => ['actual' => $habit_forecast['history']['productivity_score'], 'forecast' => $habit_forecast['forecast']['productivity_score'], 'color' => '#9391F5', 'ci_lower' => $habit_forecast['forecast']['productivity_score_lower'] ?? [], 'ci_upper' => $habit_forecast['forecast']['productivity_score_upper'] ?? []],
     ], 640, 220);
 }
-$prod_trend_footer = $habit_ready ? '<a href="insights.php#forecast" class="btn btn-ghost btn-sm">Full Insights →</a>' : null;
+$prod_trend_footer = $habit_ready ? '<a href="analyse.php#productivity" class="btn btn-ghost btn-sm">Full Analysis →</a>' : null;
+
+// Burnout risk alert (Engine C) — read-only glance at burnout_predictions;
+// the full gauge + explanation lives on Analyse → Habits → Mood & Wellness.
+$stmt = $pdo->prepare("SELECT risk_score, risk_label FROM burnout_predictions WHERE user_id=?");
+$stmt->execute([$uid]);
+$burnout_alert = $stmt->fetch();
 
 require_once __DIR__ . '/includes/header.php';
 
@@ -57,6 +63,13 @@ $first_name = explode(' ', trim($user['full_name']))[0];
 
 <h2 style="font-size:24px; margin-bottom:2px;"><?= $greeting ?>, <?= htmlspecialchars($first_name) ?> 👋</h2>
 <p style="color:var(--ink-soft); font-weight:600; font-size:14px;">Here's what's left today.</p>
+
+<?php if ($burnout_alert && $burnout_alert['risk_label'] !== 'low'): $bl = $burnout_alert['risk_label']; ?>
+<div class="alert alert-error anim-in" style="display:flex; align-items:center; gap:10px; justify-content:space-between; flex-wrap:wrap; opacity:<?= $bl === 'high' ? '1' : '0.85' ?>;">
+    <span>⚠ <strong><?= $bl === 'high' ? 'High' : 'Medium' ?> burnout risk</strong> — <?= round($burnout_alert['risk_score'] * 100) ?>% probability this week.</span>
+    <a href="analyse.php#habits" class="btn btn-ghost btn-sm">See why →</a>
+</div>
+<?php endif; ?>
 
 <div class="day-strip">
     <?php foreach (week_dates() as $d):

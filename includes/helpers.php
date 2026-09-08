@@ -879,6 +879,280 @@ function weekday_productivity_scores($pdo, $uid, $weeks = 8) {
 }
 
 /* ============================================================
+   Financial Goals — savings/emergency-fund/debt-payoff/etc targets,
+   each tracked with its own contribution history. Everything here is
+   simple, explainable math (no black-box model) matching the rest of
+   this file's philosophy: a linear projection of recent contribution
+   pace, backed by an honest best/worst-case band from that pace's own
+   variability, plus a plain risk label anyone can sanity-check.
+   current_amount is never stored — always starting_amount + SUM of
+   goal_contributions, so it can never drift out of sync (same "derive,
+   don't store" approach as user_xp() above).
+   ============================================================ */
+
+const GOAL_TYPE_META = [
+    'savings'        => ['label' => 'Savings',        'icon' => '💰'],
+    'emergency_fund' => ['label' => 'Emergency Fund',  'icon' => '🛟'],
+    'debt_payoff'    => ['label' => 'Debt Payoff',     'icon' => '📉'],
+    'investment'     => ['label' => 'Investment',      'icon' => '📈'],
+    'purchase'       => ['label' => 'Purchase',        'icon' => '🛍️'],
+    'education'      => ['label' => 'Education Fund',  'icon' => '🎓'],
+    'travel'         => ['label' => 'Travel Fund',     'icon' => '✈️'],
+    'income_target'  => ['label' => 'Income Target',   'icon' => '🎯'],
+];
+
+// All of a user's active financial goals, each with its current amount
+// (derived) and a full forecast attached — everything a Goals tab needs
+// in one call.
+function financial_goals_with_forecast($pdo, $uid) {
+    $stmt = $pdo->prepare("SELECT * FROM financial_goals WHERE user_id=? AND is_active=1 ORDER BY target_date ASC");
+    $stmt->execute([$uid]);
+    $goals = $stmt->fetchAll();
+    $out = [];
+    $last_stmt = $pdo->prepare("SELECT MAX(contributed_at) d FROM goal_contributions WHERE goal_id=?");
+    foreach ($goals as $g) {
+        $monthly = goal_monthly_contributions($pdo, $g['id']);
+        $current = (float)$g['starting_amount'] + array_sum($monthly['amounts']);
+        $g['current_amount'] = round($current, 2);
+        $last_stmt->execute([$g['id']]);
+        $g['last_contribution_at'] = $last_stmt->fetch()['d'];
+        $g['forecast'] = build_goal_forecast($g, $monthly);
+        $out[] = $g;
+    }
+    return $out;
+}
+
+// Month-by-month contribution totals for one goal, oldest first —
+// same shape as monthly_transaction_totals(), used both to derive the
+// running current_amount and as the input series for the forecast.
+function goal_monthly_contributions($pdo, $goal_id) {
+    $stmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(contributed_at, '%Y-%m') ym, COALESCE(SUM(amount),0) total
+         FROM goal_contributions WHERE goal_id=? GROUP BY ym ORDER BY ym"
+    );
+    $stmt->execute([$goal_id]);
+    $months = []; $amounts = [];
+    foreach ($stmt->fetchAll() as $r) { $months[] = $r['ym']; $amounts[] = (float)$r['total']; }
+    return ['months' => $months, 'amounts' => $amounts];
+}
+
+// The Goal Achievement Forecast: predicted completion date, a Low/
+// Medium/High risk label, a best/expected/worst-case date band, and the
+// monthly contribution needed to still hit the deadline.
+//
+// Method: average monthly contribution pace over the last up to 6
+// months (or the lifetime average if there's less history than that)
+// projects forward at a constant rate until current_amount reaches
+// target_amount. The best/worst case widens that same rate by one
+// standard deviation of the monthly amounts actually seen — a goal
+// contributed to consistently gets a tight band, one contributed to
+// erratically gets an honestly wide one. This mirrors forecast_series()
+// in ml/forecasting.py (pace-based projection + a variability-derived
+// band) without needing enough monthly data points to backtest ARIMA.
+function build_goal_forecast($goal, $monthly) {
+    $target = (float)$goal['target_amount'];
+    $current = (float)$goal['starting_amount'] + array_sum($monthly['amounts']);
+    $remaining = max(0, $target - $current);
+    $today = new DateTime('today');
+    $target_date = new DateTime($goal['target_date']);
+    $days_remaining = $today <= $target_date ? (int)$today->diff($target_date)->days : -1 * (int)$today->diff($target_date)->days;
+    $months_remaining = $days_remaining / 30.44;
+
+    if ($remaining <= 0) {
+        return ['status' => 'achieved', 'message' => 'Goal reached! 🎉'];
+    }
+
+    $recent = array_slice($monthly['amounts'], -6);
+    if (empty($recent)) {
+        return [
+            'status' => 'no_data',
+            'message' => 'Add your first contribution to unlock a completion forecast.',
+            'required_monthly' => $months_remaining > 0 ? round($remaining / $months_remaining, 2) : $remaining,
+        ];
+    }
+
+    $n = count($recent);
+    $avg = array_sum($recent) / $n;
+    $variance = $n > 1 ? array_sum(array_map(fn($v) => ($v - $avg) ** 2, $recent)) / ($n - 1) : 0;
+    $stdev = sqrt($variance);
+
+    $project = function ($monthly_rate) use ($remaining, $today) {
+        if ($monthly_rate <= 0) return null; // never gets there at this rate
+        $months_needed = $remaining / $monthly_rate;
+        return (clone $today)->modify('+' . (int)round($months_needed * 30.44) . ' days');
+    };
+
+    $expected_date = $project($avg);
+    $best_date = $project($avg + $stdev);       // faster pace = sooner
+    $worst_date = $project(max(0.01, $avg - $stdev)); // slower pace = later
+
+    // Risk: compare the expected and worst-case dates against the deadline.
+    if ($expected_date && $expected_date <= $target_date && $worst_date && $worst_date <= (clone $target_date)->modify('+30 days')) {
+        $risk = 'low';
+    } elseif ($best_date && $best_date <= $target_date) {
+        $risk = 'medium';
+    } else {
+        $risk = 'high';
+    }
+
+    // Velocity trend: last half of the window vs the first half.
+    $half = intdiv($n, 2);
+    $velocity = 'steady';
+    if ($half >= 1 && $n >= 2) {
+        $first_avg = array_sum(array_slice($recent, 0, $half)) / $half;
+        $second_avg = array_sum(array_slice($recent, $half)) / ($n - $half);
+        if ($first_avg > 0) {
+            $change = ($second_avg - $first_avg) / $first_avg;
+            if ($change > 0.15) $velocity = 'accelerating';
+            elseif ($change < -0.15) $velocity = 'slowing';
+        }
+    }
+
+    $required_monthly = $months_remaining > 0 ? round($remaining / $months_remaining, 2) : $remaining;
+
+    // Abandonment signal: goal risk detection (J) — a goal with no deposit
+    // in a long stretch reads very differently from one that's merely
+    // slow-paced, so it gets its own flag rather than hiding inside "high risk".
+    $days_since_last = null;
+    if (!empty($goal['last_contribution_at'])) {
+        $days_since_last = (int)(new DateTime($goal['last_contribution_at']))->diff($today)->days;
+    }
+    $abandoned = $days_since_last !== null && $days_since_last >= 45;
+
+    $insights = [];
+    if ($expected_date) {
+        $insights[] = 'At your current pace (₹' . number_format($avg, 0) . '/month), you\'ll reach this goal around '
+            . $expected_date->format('d M Y') . '.';
+    }
+    if ($risk !== 'low' && $required_monthly > $avg) {
+        $insights[] = 'To hit your ' . $target_date->format('d M Y') . ' deadline, increase contributions to about ₹'
+            . number_format($required_monthly, 0) . '/month (₹' . number_format(max(0, $required_monthly - $avg), 0) . ' more than your current pace).';
+    }
+    if ($velocity === 'slowing') {
+        $insights[] = 'Your contribution pace has slowed recently — a couple of catch-up deposits now would flatten that.';
+    } elseif ($velocity === 'accelerating') {
+        $insights[] = 'Your contribution pace is accelerating — keep it up and you may finish ahead of schedule.';
+    }
+    if ($abandoned) {
+        $insights[] = "It's been $days_since_last days since your last contribution — this goal may be stalling.";
+    }
+
+    // Burn-down / projection band chart series: actual cumulative balance
+    // so far (starting_amount + running contributions, month by month),
+    // then a projected line at the average pace plus a shaded band at the
+    // ± one-standard-deviation pace, out to whichever is later — the
+    // deadline or the expected finish — capped at 12 months so a very
+    // slow-paced goal doesn't stretch the chart absurdly far.
+    $cum = (float)$goal['starting_amount'];
+    $history_values = [];
+    foreach ($monthly['amounts'] as $amt) { $cum += $amt; $history_values[] = round($cum, 2); }
+    $history_labels = $monthly['months'];
+
+    $months_to_chart = (int)ceil(max($months_remaining, $expected_date ? ($today->diff($expected_date)->days / 30.44) : 0));
+    $months_to_chart = max(3, min(12, $months_to_chart));
+    $forecast_labels = $forecast_values = $forecast_lower = $forecast_upper = [];
+    $base = end($history_values) ?: (float)$goal['starting_amount'];
+    for ($i = 1; $i <= $months_to_chart; $i++) {
+        $forecast_labels[] = '+' . $i . 'mo';
+        $forecast_values[] = round($base + $avg * $i, 2);
+        $forecast_lower[] = round($base + max(0, $avg - $stdev) * $i, 2);
+        $forecast_upper[] = round($base + ($avg + $stdev) * $i, 2);
+    }
+
+    return [
+        'status' => 'ok',
+        'risk' => $risk,
+        'velocity' => $velocity,
+        'avg_monthly' => round($avg, 2),
+        'required_monthly' => $required_monthly,
+        'remaining_amount' => round($remaining, 2),
+        'expected_date' => $expected_date ? $expected_date->format('Y-m-d') : null,
+        'best_date' => $best_date ? $best_date->format('Y-m-d') : null,
+        'worst_date' => $worst_date ? $worst_date->format('Y-m-d') : null,
+        'days_since_last_contribution' => $days_since_last,
+        'abandoned' => $abandoned,
+        'insights' => $insights,
+        'chart' => [
+            'history_labels' => $history_labels,
+            'history_values' => $history_values,
+            'forecast_labels' => $forecast_labels,
+            'forecast_values' => $forecast_values,
+            'forecast_lower' => $forecast_lower,
+            'forecast_upper' => $forecast_upper,
+        ],
+    ];
+}
+
+// Small colored pill for a goal's risk label — Low/Medium/High — shared
+// styling so it always reads the same way wherever a goal is shown.
+function risk_badge_html($risk) {
+    $map = [
+        'low'    => ['label' => 'Low Risk',    'bg' => '#DDF5E5', 'fg' => '#1F7A3F'],
+        'medium' => ['label' => 'Medium Risk', 'bg' => '#FFF3D6', 'fg' => '#8A6200'],
+        'high'   => ['label' => 'High Risk',   'bg' => '#FDE0E0', 'fg' => '#B3261E'],
+    ];
+    if (!isset($map[$risk])) return '';
+    $m = $map[$risk];
+    return '<span style="display:inline-block; padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:800; background:' . $m['bg'] . '; color:' . $m['fg'] . ';">' . $m['label'] . '</span>';
+}
+
+// Financial Health Score (0-100) — a single transparent composite number,
+// not a trained model: each sub-score is plain arithmetic over data
+// already on the Finance page, weighted the same way the project already
+// blends explainable sub-scores elsewhere (see wellness_score() above).
+//   30% savings consistency — % of the last 6 months that ended with
+//       income >= expense (a month "in the black")
+//   25% spending behaviour  — inverse of how often expenses outpaced
+//       income in that window (overspending frequency)
+//   25% goal progress       — average % complete across active financial
+//       goals (skipped, and the other weights renormalized, if none exist)
+//   20% income stability    — 100 minus the coefficient of variation of
+//       monthly income (steady income = high score, spiky income = low)
+// Returns null if there's no transaction history yet to score at all.
+function financial_health_score($pdo, $uid, $fin_goals = null) {
+    $hist = monthly_transaction_totals($pdo, $uid, 6);
+    $n = count($hist['months']);
+    if ($n === 0) return null;
+
+    $in_black = 0; $overspend = 0;
+    foreach ($hist['income'] as $i => $inc) {
+        $exp = $hist['expense'][$i];
+        if ($inc >= $exp) $in_black++;
+        if ($exp > $inc) $overspend++;
+    }
+    $savings_consistency = round(($in_black / $n) * 100);
+    $spending_behavior = round(100 - (($overspend / $n) * 100));
+
+    $income_stability = null;
+    $incomes = array_filter($hist['income'], fn($v) => $v > 0);
+    if (count($incomes) >= 2) {
+        $mean = array_sum($incomes) / count($incomes);
+        $var = array_sum(array_map(fn($v) => ($v - $mean) ** 2, $incomes)) / count($incomes);
+        $cv = $mean > 0 ? sqrt($var) / $mean : 1;
+        $income_stability = round(max(0, 100 - min(100, $cv * 100)));
+    }
+
+    $goal_progress = null;
+    if ($fin_goals) {
+        $pcts = [];
+        foreach ($fin_goals as $g) {
+            if ((float)$g['target_amount'] > 0) $pcts[] = min(100, ($g['current_amount'] / $g['target_amount']) * 100);
+        }
+        if (!empty($pcts)) $goal_progress = round(array_sum($pcts) / count($pcts));
+    }
+
+    $components = ['savings_consistency' => [$savings_consistency, 0.30], 'spending_behavior' => [$spending_behavior, 0.25]];
+    if ($goal_progress !== null) $components['goal_progress'] = [$goal_progress, 0.25];
+    if ($income_stability !== null) $components['income_stability'] = [$income_stability, 0.20];
+
+    $weight_sum = array_sum(array_column($components, 1));
+    $score = 0;
+    foreach ($components as [$val, $wt]) $score += $val * ($wt / $weight_sum);
+
+    return ['score' => (int)round($score), 'breakdown' => array_map(fn($c) => $c[0], $components)];
+}
+
+/* ============================================================
    Phase 4 — richer chart types (radar, scatter-with-trend-line,
    grouped SVG bars) and the extra queries that feed them, plus a
    shared label helper for the model forecast comparison tables.
@@ -1229,4 +1503,93 @@ function daily_quote() {
     ];
     $idx = ((int)date('z')) % count($quotes);
     return $quotes[$idx];
+}
+
+/* ============================================================
+   Habit forecasting & analytics additions — Streak Survival Curve
+   and Feature Importance, shown on Insights → Forecast (Analyze
+   section). Additive only: nothing above this block was changed.
+   ============================================================ */
+
+// Empirical streak-survival curve: "of every streak you've ever run
+// across all your habits, what % reached at least day N" — the same
+// idea as a Kaplan-Meier curve, computed directly from goal_logs
+// without a stats library. A currently-still-running streak is counted
+// at its length-so-far (a small simplification vs. true KM censoring,
+// noted on the chart) rather than left out entirely.
+function streak_survival_curve($pdo, $uid, $max_days = 21) {
+    $stmt = $pdo->prepare("SELECT id FROM goals WHERE user_id=?");
+    $stmt->execute([$uid]);
+    $goal_ids = array_column($stmt->fetchAll(), 'id');
+    if (empty($goal_ids)) return null;
+
+    $placeholders = implode(',', array_fill(0, count($goal_ids), '?'));
+    $stmt = $pdo->prepare("SELECT goal_id, log_date FROM goal_logs
+        WHERE goal_id IN ($placeholders) AND status='done' ORDER BY goal_id, log_date");
+    $stmt->execute($goal_ids);
+
+    $by_goal = [];
+    foreach ($stmt->fetchAll() as $r) $by_goal[$r['goal_id']][] = $r['log_date'];
+
+    $run_lengths = [];
+    foreach ($by_goal as $dates) {
+        $run = 0; $prev = null;
+        foreach ($dates as $d) {
+            if ($prev !== null && (strtotime($d) - strtotime($prev)) / 86400 > 1) {
+                $run_lengths[] = $run;
+                $run = 0;
+            }
+            $run++;
+            $prev = $d;
+        }
+        if ($run > 0) $run_lengths[] = $run;
+    }
+
+    if (count($run_lengths) < 3) return null;
+
+    $total = count($run_lengths);
+    $survival = [];
+    for ($d = 1; $d <= $max_days; $d++) {
+        $reached = 0;
+        foreach ($run_lengths as $len) if ($len >= $d) $reached++;
+        $survival[] = round(100 * $reached / $total);
+    }
+    return ['days' => range(1, $max_days), 'survival_pct' => $survival, 'n_streaks' => $total, 'longest' => max($run_lengths)];
+}
+
+// Same Pearson-r math svg_scatter_chart() already uses internally, just
+// returned as a plain number instead of baked into an SVG string — lets
+// the same {x,y} correlation point-sets feed a ranked "what matters most"
+// bar list without duplicating a scatter chart's worth of markup.
+function pearson_r($points) {
+    $n = count($points);
+    if ($n < 3) return null;
+    $xs = array_column($points, 'x'); $ys = array_column($points, 'y');
+    $mean_x = array_sum($xs) / $n; $mean_y = array_sum($ys) / $n;
+    $num = 0; $den_x = 0; $den_y = 0;
+    foreach ($points as $p) {
+        $num += ($p['x'] - $mean_x) * ($p['y'] - $mean_y);
+        $den_x += ($p['x'] - $mean_x) ** 2;
+        $den_y += ($p['y'] - $mean_y) ** 2;
+    }
+    return ($den_x > 0 && $den_y > 0) ? $num / sqrt($den_x * $den_y) : 0;
+}
+
+// Ranks whatever correlation point-sets are available (sleep, focus time,
+// ...) by |r| — the plain-arithmetic stand-in for a trained model's
+// feature_importances_ (see ml/burnout_model.py's explain() for the same
+// idea against a real classifier). Returns null entries filtered out, so
+// a user with only one signal logged still gets a ranked list of one.
+function habit_feature_importance($pdo, $uid) {
+    $candidates = [
+        'Sleep hours'   => wellness_completion_correlation($pdo, $uid, 8),
+        'Focus minutes' => focus_completion_daily($pdo, $uid, 30),
+    ];
+    $ranked = [];
+    foreach ($candidates as $label => $points) {
+        $r = pearson_r($points);
+        if ($r !== null) $ranked[] = ['label' => $label, 'r' => $r, 'abs_r' => abs($r)];
+    }
+    usort($ranked, fn($a, $b) => $b['abs_r'] <=> $a['abs_r']);
+    return $ranked;
 }
