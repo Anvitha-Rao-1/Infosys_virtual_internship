@@ -34,6 +34,12 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
+try:
+    from xgboost import XGBRegressor
+    _HAS_XGBOOST = True
+except ImportError:
+    _HAS_XGBOOST = False
+
 
 # ---------------------------------------------------------------------------
 # Kaggle dataset ingestion
@@ -128,6 +134,66 @@ def load_kaggle_dataset(path: str) -> pd.DataFrame:
         df["type"] = "expense"
 
     df = df.dropna(subset=["date", "amount"])
+    df = clean_amount_outliers(df)
+    return df
+
+
+def clean_amount_outliers(df: pd.DataFrame, k: float = 6.0) -> pd.DataFrame:
+    """
+    Removes genuinely unambiguous data errors and flags — but does NOT
+    auto-correct — merely unusual amounts.
+
+    An earlier version of this function replaced any statistical outlier
+    (IQR fence) with its category's median, on the theory that e.g. a $9,000
+    "Home Improvement" row next to a hundred $40 ones must be a typo. Tested
+    against real data (see ml/evaluate_forecast.py), that assumption was
+    wrong: a real dataset had two genuine large one-off purchases ($8,000
+    and $9,200 — plausibly a renovation) in exactly that category shape, and
+    silently flattening them to the median deleted real signal, pushing the
+    expense forecast's MASE from 0.55 (beats a naive baseline) to 2.88 (far
+    worse) — see the module's git history / conversation log for the
+    before/after comparison. A rare-but-real large purchase and a data-entry
+    error can look statistically identical; only genuinely unambiguous
+    problems are safe to auto-correct.
+
+    So this function now does two different things:
+      1. Drops exact duplicate rows (same date, category, amount, type) —
+         a duplicate is never a real second transaction's worth of signal,
+         it's a double-import/double-entry artifact, and safe to collapse.
+      2. For amounts far outside a WIDE IQR fence (k=6.0, deliberately much
+         looser than the conventional k=1.5 "mild outlier" convention) within
+         their own category, only PRINTS a warning — it leaves the value in
+         the data untouched, so the forecaster still sees it, but a human
+         reviewing the console output knows exactly which rows to sanity
+         check by hand. Categories with fewer than 5 rows are skipped
+         entirely; there isn't enough data to tell a real outlier from
+         normal variation for a category that thin.
+    """
+    df = df.copy()
+    before = len(df)
+    df = df.drop_duplicates(subset=["date", "category", "amount", "type"], keep="first")
+    n_dupes = before - len(df)
+    if n_dupes:
+        print(f"  [data cleaning] Dropped {n_dupes} exact duplicate transaction row(s).")
+
+    n_flagged = 0
+    for cat, group in df.groupby("category"):
+        if len(group) < 5:
+            continue
+        q1, q3 = group["amount"].quantile([0.25, 0.75])
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        low, high = q1 - k * iqr, q3 + k * iqr
+        outliers = group[(group["amount"] < low) | (group["amount"] > high)]
+        for _, row in outliers.iterrows():
+            print(f"  [data cleaning] NOTE (not auto-changed): {cat!r} amount "
+                  f"{row['amount']:.2f} on {row['date'].date()} is well outside "
+                  f"this category's usual range [{low:.2f}, {high:.2f}] — worth a "
+                  f"manual look, but left as-is since it may be a real one-off purchase.")
+            n_flagged += 1
+    if n_flagged:
+        print(f"  [data cleaning] {n_flagged} unusual value(s) flagged for review (left unchanged).")
     return df
 
 
@@ -254,6 +320,53 @@ def forecast_arima(series: pd.Series, periods: int) -> np.ndarray:
         return forecast_moving_average(series, periods)
 
 
+def forecast_xgboost(series: pd.Series, periods: int, n_lags: int = 3) -> np.ndarray:
+    """
+    Gradient-boosted trees (XGBoost) as a third candidate alongside Linear
+    Regression and ARIMA. Unlike those two, XGBoost has no built-in notion of
+    "time" — it's a plain tabular regressor — so we hand-build the time
+    signal as features: the last `n_lags` values plus the month index, then
+    forecast forward one step at a time, feeding each prediction back in as
+    the next step's most recent lag (a standard recursive-forecasting setup
+    for tree models).
+
+    Needs at least n_lags+3 points to have any real train/test structure;
+    shorter series fall back to Moving Average, same philosophy as
+    forecast_arima's own fallback — a silent bad forecast is worse than a
+    plain one. Also falls back if xgboost isn't installed at all, so a
+    missing optional dependency degrades gracefully instead of crashing the
+    whole forecast.
+    """
+    y = series.values.astype(float)
+    if not _HAS_XGBOOST or len(y) < n_lags + 3:
+        return forecast_moving_average(series, periods)
+    try:
+        X, targets = [], []
+        for i in range(n_lags, len(y)):
+            X.append(list(y[i - n_lags:i]) + [i])
+            targets.append(y[i])
+        model = XGBRegressor(
+            n_estimators=100, max_depth=3, learning_rate=0.1,
+            random_state=42, verbosity=0,
+        )
+        model.fit(np.array(X), np.array(targets))
+
+        history = list(y)
+        preds = []
+        for step in range(periods):
+            idx = len(history)
+            feat = np.array([history[-n_lags:] + [idx]])
+            pred = float(model.predict(feat)[0])
+            preds.append(pred)
+            history.append(pred)
+        preds = np.array(preds)
+        if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
+            return forecast_moving_average(series, periods)
+        return np.clip(preds, 0, None)
+    except Exception:
+        return forecast_moving_average(series, periods)
+
+
 def confidence_interval(preds, residual_rmse):
     """
     Builds a simple, honest 95% confidence band around a list of point
@@ -329,6 +442,7 @@ def backtest_and_pick_best(series: pd.Series):
     methods = {
         "linear_trend": lambda train, k: forecast_linear(pd.Series(train), k),
         "arima": lambda train, k: forecast_arima(pd.Series(train), k),
+        "xgboost": lambda train, k: forecast_xgboost(pd.Series(train), k),
     }
     scores = {name: {"actual": [], "pred": []} for name in methods}
 
@@ -368,6 +482,8 @@ def forecast_series(series: pd.Series, periods: int):
     method_name, mae, rmse, all_scores = backtest_and_pick_best(series)
     if method_name == "arima":
         preds = forecast_arima(series, periods)
+    elif method_name == "xgboost":
+        preds = forecast_xgboost(series, periods)
     else:
         preds = forecast_linear(series, periods)
     preds = [round(float(p), 2) for p in preds]

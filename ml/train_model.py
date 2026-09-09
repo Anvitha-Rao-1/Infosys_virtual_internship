@@ -65,6 +65,7 @@ from forecasting import (
     forecast_series,
     forecast_linear,
     forecast_arima,
+    forecast_xgboost,
 )
 
 try:
@@ -294,6 +295,7 @@ def build_finance_forecast(user_tx: pd.DataFrame, benchmark_shares) -> dict:
     model_fns = {
         "linear_trend": forecast_linear,
         "arima": forecast_arima,
+        "xgboost": forecast_xgboost,
     }
     model_forecasts = {}
     for name, fn in model_fns.items():
