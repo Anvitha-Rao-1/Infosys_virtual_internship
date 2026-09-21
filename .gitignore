@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Secrets — never commit. See .env.example for the key names.
+.env
