@@ -1019,3 +1019,19 @@ details.how li{ font-size:13.5px; line-height:1.7; color:var(--ink-mid); margin-
 .hint.warn{ color:var(--clay-deep); font-weight:560; }
 .hint.ok{ color:var(--shoot-deep); font-weight:560; }
 .auth-err a{ color:var(--clay-deep); font-weight:700; text-decoration:underline; }
+
+/* ---------- "Update my forecasts" ---------- */
+.freshness{ display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    background:var(--paper); border:1px solid var(--paper-edge); border-radius:var(--r-lg);
+    padding:18px 24px; margin-bottom:26px; }
+.freshness-t{ font-size:14.5px; font-weight:500; }
+.freshness-s{ font-size:12.5px; color:var(--ink-soft); margin-top:3px; }
+.freshness .btn{ margin-left:auto; }
+.freshness.stale{ border-color:var(--sun-deep); background:#FEF8E6; }
+.freshness-msg{ font-size:13.5px; line-height:1.6; width:100%; margin-top:6px; }
+.freshness-msg code{ background:var(--cream); border-radius:6px; padding:2px 7px;
+    font-size:12.5px; font-family:ui-monospace, Consolas, monospace; }
+.spin{ display:inline-block; width:13px; height:13px; border:2px solid rgba(26,43,33,.25);
+    border-top-color:var(--bark); border-radius:50%; animation:spin .7s linear infinite; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce){ .spin{ animation-duration:2s; } }

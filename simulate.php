@@ -30,6 +30,19 @@ $prod = get_whatif($pdo, $uid, 'productivity');
 $burn = $hab['burnout_simulation'] ?? null;
 $never_run = ($fin === null && $hab === null && $prod === null);
 
+// When these scenarios were last worked out. Someone who has logged a
+// fortnight of data since then is looking at a stale answer and has no
+// way of knowing, so the page says so and offers to redo it.
+$built_at = null;
+foreach ([$fin, $hab, $prod] as $p_) {
+    if (!empty($p_['_generated_at'])) {
+        $t = strtotime($p_['_generated_at']);
+        if ($built_at === null || $t > $built_at) $built_at = $t;
+    }
+}
+$age_days = $built_at ? max(0, (int)floor((time() - $built_at) / 86400)) : null;
+$is_stale = $age_days !== null && $age_days >= 3;
+
 /* ---- Buy vs rent: plain arithmetic, recomputed on submit ---- */
 $bvr_defaults = [
     'price' => 4500000, 'deposit_pct' => 20, 'loan_rate_pct' => 8.5,
@@ -215,7 +228,26 @@ require_once __DIR__ . '/includes/shell.php';
 </div>
 <?php endif; ?>
 
-<section class="ch enter" style="padding-top:44px;">
+<?php if ($built_at): ?>
+<div class="freshness <?= $is_stale ? 'stale' : '' ?>" id="fresh" style="margin-top:44px;">
+    <div>
+        <div class="freshness-t"><?php
+            if ($age_days === 0)      echo 'Worked out from your data earlier today.';
+            elseif ($age_days === 1)  echo 'Worked out from your data yesterday.';
+            else                      echo 'Worked out from your data ' . $age_days . ' days ago.';
+        ?></div>
+        <div class="freshness-s">
+            <?= $is_stale
+                ? 'You have probably logged a fair bit since then — these may be behind.'
+                : 'Anything you have logged since then is not included yet.' ?>
+        </div>
+    </div>
+    <button class="btn <?= $is_stale ? 'btn-go' : 'btn-line' ?>" id="refreshBtn">Update now</button>
+    <div class="freshness-msg" id="freshMsg" style="display:none;"></div>
+</div>
+<?php endif; ?>
+
+<section class="ch enter" style="padding-top:<?= $built_at ? '18px' : '44px' ?>;">
     <div class="tabs" role="tablist">
         <button class="on" data-tab="money" role="tab">Money</button>
         <button data-tab="habits" role="tab">Habits</button>
@@ -488,6 +520,35 @@ require_once __DIR__ . '/includes/shell.php';
         }
         slider.addEventListener('input', update);
         update();
+    });
+
+    /* ---- update my forecasts ----
+       Runs the three Python steps in the order they depend on each
+       other, so nobody has to know that order exists. */
+    const rBtn = document.getElementById('refreshBtn');
+    const rMsg = document.getElementById('freshMsg');
+    rBtn?.addEventListener('click', async () => {
+        rBtn.disabled = true;
+        rBtn.innerHTML = '<span class="spin"></span> Working…';
+        rMsg.style.display = 'block';
+        rMsg.textContent = 'Re-reading everything you have logged. This takes a few seconds.';
+        try {
+            const res = await fetch('refresh.php', { method: 'POST' });
+            const d = await res.json();
+            if (d.ok) {
+                rMsg.textContent = 'Up to date. Reloading…';
+                setTimeout(() => location.reload(), 900);
+            } else {
+                rMsg.innerHTML = esc(d.reason || 'That did not work.') +
+                    (d.manual ? '<br>You can run it yourself: <code>' + esc(d.manual) + '</code>' : '');
+                rBtn.disabled = false;
+                rBtn.textContent = 'Try again';
+            }
+        } catch (e) {
+            rMsg.textContent = 'Could not reach the server. Everything on this page still stands.';
+            rBtn.disabled = false;
+            rBtn.textContent = 'Try again';
+        }
     });
 
     /* ---- the written explanation ---- */
