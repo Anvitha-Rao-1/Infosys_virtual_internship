@@ -1,5 +1,16 @@
 # Sprout — Habit & Goal Tracker
 
+> **New to this codebase?** Start with
+> **[`docs/CODE_GUIDE.md`](docs/CODE_GUIDE.md)** — a plain-English tour of
+> every file, every database table, and how the whole thing fits together.
+> No prior knowledge assumed.
+>
+> Other docs: [`docs/WHATIF_AND_AI.md`](docs/WHATIF_AND_AI.md) (technical
+> detail on the what-if + AI layers) ·
+> [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md) (presenting or
+> defending the project) · [`ml/README_ML.md`](ml/README_ML.md) (the
+> forecasting models).
+
 A full-stack habit-tracking web app: registration/login, a dashboard, category
 pages (Academic, Study Habits, Personal Habits, Health & Fitness, Work), and a
 profile page that shows every goal as a habit-tracker grid with streaks.
@@ -420,3 +431,163 @@ after updating, see `ml/README_ML.md`).
   `category_shares_user_pct` / `category_shares_benchmark_pct` splits
   (previously only the already-blended dollar forecast was cached), which
   is what the new "spending shape vs. benchmark" radar chart plots.
+
+---
+
+## What's new: the What-If Lab, scenario simulation, and a Hugging Face AI layer
+
+This release adds a layer **on top of** the existing ML system. The
+forecasting models were not retrained, replaced, or duplicated — the new
+engine imports the existing ones and feeds them modified inputs.
+
+Full technical write-up: [`docs/WHATIF_AND_AI.md`](docs/WHATIF_AND_AI.md).
+In-app explanation: the **How It Works** page in the sidebar.
+
+### Two new pages
+
+- **What-If Lab** (`simulate.php`) — three tabs (Finance / Habits /
+  Productivity). Each has an overview, the historical trend with the baseline
+  forecast, an interactive slider, an Expected / Improved / Risk comparison, a
+  response curve, the assumptions in full, and an AI insight button.
+  Finance also carries a **Buy vs. Rent** calculator; Habits also carries a
+  **burnout risk simulator**.
+- **How It Works** (`methodology.php`) — where every number comes from, which
+  data trained what, machine learning vs. the language model side by side, and
+  the AI concepts the project genuinely uses. Its figures are read live from
+  your own account, not hardcoded.
+
+### How a scenario is produced
+
+1. Run the **existing** forecast on your real history — this is the baseline.
+2. **Lock** the winning model, so every scenario is forecast by the same one
+   and differences come from the lever rather than from switching models.
+3. Rescale your historical input series to the chosen lever level. The shape
+   and trend are preserved; only the level moves.
+4. Push that counterfactual history through the **same** forecast function.
+5. Cache every grid point, so the sliders are instant and the live app still
+   never calls Python at request time.
+
+The **burnout simulator** is the clearest case: it loads the already-trained
+`burnout_model.joblib`, takes the feature vector that model already produced
+for you, changes one value, and calls `.predict_proba()` again. Nothing is
+retrained and no feature is recomputed.
+
+The slider only stops on values the model was actually run on — a prediction
+that was never made is never shown.
+
+### The AI layer produces no numbers
+
+Every figure comes from the trained models. The Hugging Face model is given
+about twenty already-computed numbers and asked to explain them in plain
+English. No raw transactions or check-ins ever leave the server, and the app
+shows you the exact payload that was sent.
+
+**It is entirely optional.** With no API key, a bad key, a rate limit or no
+internet, you still get every prediction, scenario, comparison and chart —
+only the written paragraph changes source, and it is badged "Written locally"
+instead of "Written by …".
+
+### Setup
+
+```bash
+# 1. Additive migration — adds whatif_cache and ai_insight_cache.
+#    Does not alter any existing table.
+#    Import database/migration_whatif.sql in phpMyAdmin, or:
+mysql -u root -P 3307 habit_tracker < database/migration_whatif.sql
+
+# 2. Optional — only needed for live AI explanations
+copy .env.example .env      # then paste a Hugging Face token into HF_API_KEY
+
+# 3. Build the scenario grids (re-run after logging new data)
+python ml/whatif_engine.py
+```
+
+Run `whatif_engine.py` **after** `train_model.py` and `burnout_model.py` — it
+reads what they write. The "↻ Re-simulate" button on the What-If Lab does
+this for you when PHP is allowed to run shell commands.
+
+The API key is read by `includes/env.php` from a gitignored `.env`, never
+hard-coded. `.env.example` is committed and holds key names only.
+
+### New database tables
+
+| Table | Written by | Read by |
+|---|---|---|
+| `whatif_cache` | `ml/whatif_engine.py` | `simulate.php`, `methodology.php` |
+| `ai_insight_cache` | `includes/ai_insight.php` | same |
+
+### Bug fix included
+
+`run_forecast.php` (the existing **↻ Retrain now** button) never worked on
+Windows. `train_model.py` prints `₹` and `—`, which the Windows Python console
+emits as cp1252 — not valid UTF-8 — and `json_encode()` returns `false` on
+invalid UTF-8, so the endpoint returned an empty response body. The button
+always reported "Could not reach the server" even when the retrain had
+actually succeeded. Both that file and the new `run_whatif.php` now convert
+the encoding before encoding the JSON.
+
+### Demo data now stays fresh
+
+`ml/seed_demo_users.php` used to insert the payload's absolute dates, so the
+demo accounts went stale a little more every day. Once the newest data was
+over a week old the last **complete** week was empty, and ARIMA correctly
+extrapolated that crash down to a productivity forecast of 0/100 — the model
+behaving properly on stale input, but a useless demo.
+
+The seeder now shifts every date forward so the newest event lands on **today**,
+so re-running it always produces current data:
+
+```bash
+C:\xampp\php\php.exe ml\seed_demo_users.php
+python ml/train_model.py
+python ml/burnout_model.py
+python ml/whatif_engine.py       # must run last — it reads what the other two write
+```
+
+It also backdates each goal's `created_at` to its first check-in; previously
+every goal was created "now", so the Analyse page showed "days active = 1"
+next to months of history.
+
+An exact day shift is used rather than a multiple of 7 because this payload
+has no weekday pattern to preserve (check-ins per day are flat across
+weekdays), and running the data up to today keeps streaks alive. Set
+`$SHIFT_WHOLE_WEEKS = true` in the seeder if you ever regenerate the payload
+with a deliberate weekday pattern.
+
+> Re-seeding **deletes and re-inserts** the two demo accounts, so their user
+> IDs change and their cached forecasts cascade away — which is why the three
+> Python scripts above need re-running afterwards. Your own account is never
+> touched; the seeder only matches the two `@sprout.test` demo emails.
+
+### The AI Coach is now a chat box
+
+`coach.php` used to be a static list of rule-based tips. It now leads with a
+**chat box you can ask anything about your own data** — "how are my streaks?",
+"how much did I save this month?", "what should I improve?" — with the
+rule-based summary kept underneath (it needs no AI and is always available).
+
+**It cannot invent numbers.** Before your question is sent, the app gathers
+about 45 real values about you — streaks, sleep, spending, forecasts, burnout
+factors, what-if results — from the same helper functions the rest of the app
+displays, and puts them in the AI's instructions as a facts sheet. The AI is
+told to answer only from those, and to say so when something isn't there.
+Asked "how much did I spend on coffee in March 2024?" it replies *"I don't
+have that tracked yet"* rather than making a figure up.
+
+The browser only ever sends the question text. Every number is gathered
+server-side, so a tampered request cannot feed the coach false figures.
+
+**With no API key it still works** — a keyword matcher answers from the same
+facts sheet, tagged "written locally".
+
+```bash
+# One additive migration — creates coach_messages, alters nothing.
+mysql -u root -P 3307 habit_tracker < database/migration_coach_chat.sql
+```
+
+### Also fixed
+
+`forecast_method_label()` in `includes/helpers.php` rendered the model names
+"Xgboost" and "Linear Trend", which didn't match the "XGBoost" / "Linear
+Regression" wording used in the comparison-table headers and the docs for
+those same models. All four methods now have explicit labels.
