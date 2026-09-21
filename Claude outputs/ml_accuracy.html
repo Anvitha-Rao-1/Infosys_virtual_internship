@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sprout — Model Accuracy</title>
+<style>
+  :root {
+    --ink: #121212; --ink-soft: #74747a; --line: #e9e9ea; --surface: #fcfcfb;
+    --finance: #6e86d6; --habit: #7fa22a; --mood: #9391f5;
+    --good: #3f8f4f; --bad: #c14646;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background: var(--surface); color: var(--ink); font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; padding: 28px 32px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--ink-soft); margin: 0 0 28px; font-size: 13px; max-width: 760px; }
+  .note { background:#fff8ea; border:1px solid #f0dfae; border-radius:10px; padding:12px 16px; font-size:12.5px; color:#6b5a20; margin-bottom:28px; max-width:900px; }
+  .charts { display:flex; gap:28px; flex-wrap:wrap; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:20px 22px 16px; flex:1; min-width:420px; }
+  .card h2 { font-size:14px; margin:0 0 2px; }
+  .card p.desc { color:var(--ink-soft); font-size:11.5px; margin:0 0 14px; }
+  .legend { display:flex; gap:16px; font-size:11.5px; color:var(--ink-soft); margin-top:10px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .swatch { width:10px; height:10px; border-radius:3px; display:inline-block; }
+  .bar-group { display:flex; align-items:flex-end; gap:18px; height:230px; padding-top:10px; border-bottom:1px solid var(--line); }
+  .bar-wrap { display:flex; flex-direction:column; align-items:center; flex:1; height:100%; justify-content:flex-end; position:relative; }
+  .bar { width: 34px; border-radius: 6px 6px 3px 3px; transition: filter .15s; position:relative; }
+  .bar:hover { filter: brightness(1.08); }
+  .bar-value { font-size:11.5px; font-weight:600; margin-bottom:4px; }
+  .bar-sub { font-size:9.5px; color:var(--ink-soft); margin-top:6px; text-align:center; line-height:1.25; }
+  .axis-labels { display:flex; gap:18px; margin-top:6px; }
+  .axis-labels div { flex:1; text-align:center; font-size:10.5px; color:var(--ink-soft); }
+  table { width:100%; border-collapse:collapse; margin-top:30px; font-size:12px; max-width:900px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); }
+  th { color:var(--ink-soft); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+  td.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:20px; font-size:10.5px; font-weight:600; }
+  .tag.good { background:#e6f4e8; color:var(--good); }
+  .tag.bad { background:#fbe9e9; color:var(--bad); }
+</style>
+</head>
+<body>
+
+<h1>Sprout — Forecast Accuracy, by Target</h1>
+<p class="sub">Real backtest results from the project's own evaluation run (evaluate_forecast.py / evaluate_habit_forecast.py). Each bar is the accuracy of whichever model actually won that series' backtest — not one fixed algorithm.</p>
+
+<div class="note">⚠️ These evaluation runs report only the <b>winning</b> model's numbers per series — not a side-by-side of all three candidates (Linear Regression / ARIMA / XGBoost) for every target. So this chart shows "how accurate was the model Sprout ended up using," not "how did each of the three algorithms individually score." If you want the full three-way comparison, that would need re-running evaluate_forecast.py with per-candidate metrics printed.</div>
+
+<div class="charts">
+
+  <div class="card">
+    <h2>Accuracy (%)</h2>
+    <p class="desc">Higher is better — but read together with MASE on the right (accuracy alone can mislead, see Mood).</p>
+    <div class="bar-group">
+      <div class="bar-wrap"><div class="bar-value">70.8%</div><div class="bar" style="height:70.8%; background:var(--finance);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">79.8%</div><div class="bar" style="height:79.8%; background:var(--finance);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">98.8%</div><div class="bar" style="height:98.8%; background:var(--habit);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">98.7%</div><div class="bar" style="height:98.7%; background:var(--habit);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">98.5%</div><div class="bar" style="height:98.5%; background:var(--mood);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">98.9%</div><div class="bar" style="height:98.9%; background:var(--mood);"></div></div>
+    </div>
+    <div class="axis-labels">
+      <div>Income</div><div>Expense</div><div>Habit S1</div><div>Habit S2</div><div>Mood S1</div><div>Mood S2</div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--finance)"></i>Finance (Engine A)</span>
+      <span><i class="swatch" style="background:var(--habit)"></i>Habit (Engine A)</span>
+      <span><i class="swatch" style="background:var(--mood)"></i>Mood (Engine A)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>MASE — beats a naive guess?</h2>
+    <p class="desc">Below 1.0 (dashed line) = genuinely beats "next period = last period." Above 1.0 = doesn't, even with high accuracy%.</p>
+    <div class="bar-group" style="position:relative;">
+      <div style="position:absolute; left:0; right:0; bottom:60%; border-top:2px dashed #c9c9cc;"></div>
+      <div style="position:absolute; right:4px; bottom:calc(60% + 3px); font-size:9.5px; color:var(--ink-soft);">MASE = 1.0</div>
+      <div class="bar-wrap"><div class="bar-value">1.35</div><div class="bar" style="height:81%; background:var(--bad);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">0.55</div><div class="bar" style="height:33%; background:var(--good);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">0.39</div><div class="bar" style="height:23.4%; background:var(--good);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">0.37</div><div class="bar" style="height:22.2%; background:var(--good);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">1.63</div><div class="bar" style="height:97.8%; background:var(--bad);"></div></div>
+      <div class="bar-wrap"><div class="bar-value">1.31</div><div class="bar" style="height:78.6%; background:var(--bad);"></div></div>
+    </div>
+    <div class="axis-labels">
+      <div>Income</div><div>Expense</div><div>Habit S1</div><div>Habit S2</div><div>Mood S1</div><div>Mood S2</div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--good)"></i>Beats baseline (MASE &lt; 1)</span>
+      <span><i class="swatch" style="background:var(--bad)"></i>Doesn't beat baseline (MASE ≥ 1)</span>
+    </div>
+  </div>
+
+</div>
+
+<table>
+  <thead>
+    <tr><th>Target</th><th>Split</th><th>Winning model</th><th class="num">Accuracy</th><th class="num">MASE</th><th>Verdict</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Income</td><td>—</td><td>not reported per-model</td><td class="num">70.8%</td><td class="num">1.35</td><td><span class="tag bad">Worse than naive</span></td></tr>
+    <tr><td>Expense</td><td>—</td><td>not reported per-model</td><td class="num">79.8%</td><td class="num">0.55</td><td><span class="tag good">Beats naive</span></td></tr>
+    <tr><td>Habit Completion</td><td>Split 1 (92/8)</td><td>Linear Regression</td><td class="num">98.8%</td><td class="num">0.39</td><td><span class="tag good">Beats naive</span></td></tr>
+    <tr><td>Habit Completion</td><td>Split 2 (80/20)</td><td>ARIMA</td><td class="num">98.7%</td><td class="num">0.37</td><td><span class="tag good">Beats naive</span></td></tr>
+    <tr><td>Mood</td><td>Split 1 (92/8)</td><td>Linear Regression</td><td class="num">98.5%</td><td class="num">1.63</td><td><span class="tag bad">Doesn't beat naive</span></td></tr>
+    <tr><td>Mood</td><td>Split 2 (80/20)</td><td>ARIMA</td><td class="num">98.9%</td><td class="num">1.31</td><td><span class="tag bad">Doesn't beat naive</span></td></tr>
+    <tr><td>Burnout risk</td><td>—</td><td>Random Forest Classifier</td><td class="num">not reported</td><td class="num">—</td><td><span class="tag" style="background:#eee;color:#555;">Feature-importance only</span></td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>
