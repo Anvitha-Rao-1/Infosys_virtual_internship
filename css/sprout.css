@@ -1013,3 +1013,9 @@ details.how li{ font-size:13.5px; line-height:1.7; color:var(--ink-mid); margin-
     .auth-foot{ display:none; }
     .auth-panel{ padding:36px 24px 52px; }
 }
+
+/* ---------- Sign-up extras ---------- */
+.hint{ font-size:12.5px; color:var(--ink-soft); margin-top:7px; line-height:1.5; }
+.hint.warn{ color:var(--clay-deep); font-weight:560; }
+.hint.ok{ color:var(--shoot-deep); font-weight:560; }
+.auth-err a{ color:var(--clay-deep); font-weight:700; text-decoration:underline; }
