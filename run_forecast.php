@@ -24,4 +24,14 @@ if ($output === null) {
 }
 
 $ok = stripos($output, 'Done.') !== false;
+
+// BUGFIX: train_model.py prints the ₹ sign and em dashes, which the Windows
+// Python console emits as cp1252 — not valid UTF-8. json_encode() returns
+// false on invalid UTF-8, so this endpoint was returning an empty 200 body
+// and the "Retrain now" button always reported "Could not reach the server"
+// even when the retrain had actually succeeded. Converting first fixes it.
+if (!mb_check_encoding($output, 'UTF-8')) {
+    $output = mb_convert_encoding($output, 'UTF-8', 'Windows-1252');
+}
+
 echo json_encode(['success' => $ok, 'reason' => $ok ? null : 'script ran but did not finish cleanly', 'output' => $output]);

@@ -1163,7 +1163,16 @@ function financial_health_score($pdo, $uid, $fin_goals = null) {
 // pages describe the same two candidate models (Linear Regression, ARIMA)
 // the same way.
 function forecast_method_label($m) {
-    $map = ['arima' => 'ARIMA'];
+    // Every method gets an explicit label. Falling back to ucwords() for the
+    // rest used to render "Xgboost" and "Linear Trend", which didn't match
+    // the "XGBoost" / "Linear Regression" wording used in the comparison
+    // table headers and the docs for those same models.
+    $map = [
+        'arima' => 'ARIMA',
+        'xgboost' => 'XGBoost',
+        'linear_trend' => 'Linear Regression',
+        'moving_average' => 'Moving Average',
+    ];
     if (isset($map[$m])) return $map[$m];
     return $m ? ucwords(str_replace('_', ' ', $m)) : '—';
 }

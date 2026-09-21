@@ -4,13 +4,14 @@
 // Edit these 4 values only if your XAMPP setup differs
 // ============================================
 $DB_HOST = 'localhost';
+$DB_PORT = '3307';
 $DB_NAME = 'habit_tracker';
 $DB_USER = 'root';
 $DB_PASS = '';
 
 try {
     $pdo = new PDO(
-        "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
+        "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4",
         $DB_USER,
         $DB_PASS,
         [

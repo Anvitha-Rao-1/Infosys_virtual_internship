@@ -77,6 +77,7 @@ except ImportError:
 
 DB_CONFIG = {
     "host": "localhost",
+    "port": 3307,
     "user": "root",
     "password": "",
     "database": "habit_tracker",

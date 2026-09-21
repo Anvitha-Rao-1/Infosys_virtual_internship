@@ -16,6 +16,76 @@ require_once __DIR__ . '/../includes/db.php';
 $payload = json_decode(file_get_contents(__DIR__ . '/data/_demo_seed_payload.json'), true);
 if (!$payload) { fwrite(STDERR, "Could not read _demo_seed_payload.json\n"); exit(1); }
 
+// ============================================================
+// DATE SHIFTING — why this exists
+// ------------------------------------------------------------
+// The payload stores ABSOLUTE dates (it was generated once, in
+// mid-2026). Inserted as-is, the demo data goes stale a little more
+// every day, and the forecasting pipeline reacts to that exactly as it
+// should: once the newest data is more than a week old, the last
+// COMPLETE week is empty, and ARIMA faithfully extrapolates that crash
+// down to a near-zero forecast. That is the model behaving correctly on
+// stale input, but it makes for a terrible demo.
+//
+// So every date is shifted forward by a constant offset chosen so the
+// newest event lands on TODAY. Re-running this seeder therefore always
+// produces current data, and the forecasts stay meaningful.
+//
+// WHY NOT SHIFT BY WHOLE WEEKS? Shifting by an arbitrary number of days
+// moves each event to a different weekday, which would scramble any
+// designed weekday pattern (e.g. a deliberate weekend dip) and make the
+// "your most productive day" analysis meaningless. That was checked
+// against this payload before choosing: check-ins per day are flat
+// across weekdays (persona 0: 3.15-3.54; persona 1: 1.19-1.81 — noise,
+// not structure), so there is no weekday pattern to preserve here and an
+// exact shift is safe. It is also the better option, because it keeps
+// the data running right up to today and so keeps streaks alive.
+//
+// If you ever regenerate the payload WITH a deliberate weekday pattern,
+// flip this to true — a multiple of 7 preserves weekday alignment
+// exactly, at the cost of leaving a gap of up to 6 days at the end.
+// ============================================================
+$SHIFT_WHOLE_WEEKS = false;
+
+$newest = null;
+foreach ([['goal_logs', 'log_date'], ['transactions', 'txn_date'],
+          ['focus_sessions', 'started_at'], ['mood_logs', 'log_date']] as [$key, $field]) {
+    foreach ($payload[$key] ?? [] as $row) {
+        $d = substr($row[$field], 0, 10);
+        if ($newest === null || $d > $newest) $newest = $d;
+    }
+}
+
+$offset_days = 0;
+if ($newest !== null) {
+    // Only ever shift FORWARD. If the payload is somehow already current
+    // (or dated in the future), leave it alone rather than dragging data
+    // backwards into the past.
+    $offset_days = max(0, (int)round((strtotime('today') - strtotime($newest)) / 86400));
+    if ($SHIFT_WHOLE_WEEKS) $offset_days = intdiv($offset_days, 7) * 7;
+}
+
+/** 'YYYY-MM-DD' (or the date part of a datetime) shifted forward. */
+$shift_date = function (string $s) use ($offset_days): string {
+    $d = substr($s, 0, 10);
+    return $offset_days === 0 ? $d : date('Y-m-d', strtotime("$d +$offset_days days"));
+};
+/** 'YYYY-MM-DD HH:MM:SS' shifted forward, time of day preserved. */
+$shift_datetime = function (string $s) use ($offset_days): string {
+    return $offset_days === 0 ? $s : date('Y-m-d H:i:s', strtotime("$s +$offset_days days"));
+};
+
+// Earliest shifted check-in per goal, used below to backdate
+// goals.created_at. Without it every goal is created "now", which makes
+// the Analyse page compute "days active = 1" next to months of history
+// and report a nonsensical 100% consistency.
+$goal_first_log = [];
+foreach ($payload['goal_logs'] ?? [] as $l) {
+    $k = $l['persona'] . '|' . $l['goal_title'];
+    $d = $shift_date($l['log_date']);
+    if (!isset($goal_first_log[$k]) || $d < $goal_first_log[$k]) $goal_first_log[$k] = $d;
+}
+
 $pdo->beginTransaction();
 try {
     // ---- wipe any previous run of these same demo accounts ----
@@ -40,12 +110,17 @@ try {
 
     // ---- goals ----
     $goal_ids = []; // "persona|title" -> goal id
-    $ins_goal = $pdo->prepare("INSERT INTO goals (user_id, category_id, title, description, frequency, target_per_week, est_minutes) VALUES (?,?,?,?,?,?,?)");
+    // created_at is set explicitly (rather than defaulting to NOW()) so a
+    // goal appears to have existed since its first check-in — see the note
+    // on $goal_first_log above.
+    $ins_goal = $pdo->prepare("INSERT INTO goals (user_id, category_id, title, description, frequency, target_per_week, est_minutes, created_at) VALUES (?,?,?,?,?,?,?,?)");
     foreach ($payload['goals'] as $g) {
         $uid = $user_ids[$g['persona']];
         $cid = $cat_map[$g['category_slug']];
-        $ins_goal->execute([$uid, $cid, $g['title'], $g['description'], $g['frequency'], $g['target_per_week'], $g['est_minutes']]);
-        $goal_ids[$g['persona'] . '|' . $g['title']] = (int)$pdo->lastInsertId();
+        $key = $g['persona'] . '|' . $g['title'];
+        $created = isset($goal_first_log[$key]) ? $goal_first_log[$key] . ' 09:00:00' : date('Y-m-d H:i:s');
+        $ins_goal->execute([$uid, $cid, $g['title'], $g['description'], $g['frequency'], $g['target_per_week'], $g['est_minutes'], $created]);
+        $goal_ids[$key] = (int)$pdo->lastInsertId();
     }
 
     // ---- goal_logs ----
@@ -53,7 +128,7 @@ try {
     $n_logs = 0;
     foreach ($payload['goal_logs'] as $l) {
         $gid = $goal_ids[$l['persona'] . '|' . $l['goal_title']];
-        $ins_log->execute([$gid, $l['log_date'], $l['status']]);
+        $ins_log->execute([$gid, $shift_date($l['log_date']), $l['status']]);
         $n_logs++;
     }
 
@@ -61,7 +136,7 @@ try {
     $ins_txn = $pdo->prepare("INSERT INTO transactions (user_id, type, category, amount, txn_date, note) VALUES (?,?,?,?,?,?)");
     foreach ($payload['transactions'] as $t) {
         $uid = $user_ids[$t['persona']];
-        $ins_txn->execute([$uid, $t['type'], $t['category'], $t['amount'], $t['txn_date'], $t['note']]);
+        $ins_txn->execute([$uid, $t['type'], $t['category'], $t['amount'], $shift_date($t['txn_date']), $t['note']]);
     }
 
     // ---- focus_sessions ----
@@ -69,7 +144,7 @@ try {
     foreach ($payload['focus_sessions'] as $f) {
         $uid = $user_ids[$f['persona']];
         $gid = isset($f['goal_title']) ? ($goal_ids[$f['persona'] . '|' . $f['goal_title']] ?? null) : null;
-        $ins_focus->execute([$uid, $gid, $f['planned_minutes'], $f['actual_minutes'], $f['status'], $f['started_at']]);
+        $ins_focus->execute([$uid, $gid, $f['planned_minutes'], $f['actual_minutes'], $f['status'], $shift_datetime($f['started_at'])]);
     }
 
     // ---- mood_logs (calibrated from the real Sleep Health & Lifestyle dataset) ----
@@ -78,7 +153,7 @@ try {
         $ins_mood = $pdo->prepare("INSERT IGNORE INTO mood_logs (user_id, log_date, mood, sleep_hours, stress_level) VALUES (?,?,?,?,?)");
         foreach ($payload['mood_logs'] as $ml) {
             $uid = $user_ids[$ml['persona']];
-            $ins_mood->execute([$uid, $ml['log_date'], $ml['mood'], $ml['sleep_hours'], $ml['stress_level']]);
+            $ins_mood->execute([$uid, $shift_date($ml['log_date']), $ml['mood'], $ml['sleep_hours'], $ml['stress_level']]);
             $n_moods++;
         }
     }
@@ -86,6 +161,11 @@ try {
     $pdo->commit();
 
     echo "Seeded demo users:\n";
+    if ($offset_days > 0) {
+        echo "  (all dates shifted +$offset_days days so the data ends today, " . date('Y-m-d') . ")\n";
+    } else {
+        echo "  (no date shift needed — the payload is already current)\n";
+    }
     foreach ($payload['users'] as $i => $u) {
         echo "  - {$u['full_name']} <{$u['email']}> / password: {$u['password']}  (user_id={$user_ids[$i]})\n";
     }
