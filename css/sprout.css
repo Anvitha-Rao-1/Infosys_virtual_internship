@@ -931,3 +931,85 @@ details.how li{ font-size:13.5px; line-height:1.7; color:var(--ink-mid); margin-
     .rem{ grid-template-columns:auto 1fr auto; row-gap:12px; }
     .cal-nav h2{ min-width:0; font-size:21px; }
 }
+
+/* ============================================================
+   Sign in / sign up
+   ------------------------------------------------------------
+   The one screen someone sees before they have any data, so it has to
+   carry the whole identity on its own: forest ground on the left with a
+   plant that actually grows, the form on warm paper to the right.
+   ============================================================ */
+.auth{ display:grid; grid-template-columns:1.05fr 1fr; min-height:100vh; }
+
+.auth-side{ background:var(--forest-deep); color:var(--on-dark); padding:44px 52px;
+    display:flex; flex-direction:column; position:relative; overflow:hidden; }
+/* Soil strata, same device as the app's hero — decoration that carries
+   the metaphor rather than an abstract shape. */
+.auth-side::after{ content:''; position:absolute; left:-200px; bottom:-300px; width:760px; height:760px;
+    border-radius:50%; border:1px solid rgba(111,191,115,.13);
+    box-shadow:0 0 0 54px rgba(111,191,115,.05), 0 0 0 128px rgba(111,191,115,.03); pointer-events:none; }
+.auth-side > *{ position:relative; z-index:2; }
+
+.auth-mark{ display:flex; align-items:center; gap:10px; text-decoration:none; }
+.auth-mark span{ font-family:var(--display); font-variation-settings:var(--wonk);
+    font-size:24px; font-weight:600; color:var(--on-dark); letter-spacing:-.02em; }
+
+.auth-mid{ margin:auto 0; padding:40px 0; }
+.auth-plant{ display:block; margin-bottom:34px; }
+.auth-plant .st{ stroke:var(--shoot); stroke-width:3.6; fill:none; stroke-linecap:round;
+    stroke-dasharray:230; stroke-dashoffset:230; animation:draw 1.7s var(--ease) .2s forwards; }
+.auth-plant .lf{ fill:var(--lime); opacity:0; transform-box:fill-box; transform-origin:0% 50%;
+    animation:pop .6s var(--ease) forwards; }
+.auth-plant .lf.r{ transform-origin:100% 50%; }
+.auth-plant .gr{ stroke:rgba(240,234,218,.26); stroke-width:1.5; stroke-linecap:round; }
+
+.auth-side h2{ font-size:clamp(28px,3.2vw,40px); color:var(--on-dark); max-width:15ch;
+    font-variation-settings:'SOFT' 40,'WONK' 1,'opsz' 100; }
+.auth-side h2 em{ font-style:normal; color:var(--lime); }
+.auth-side p{ font-size:16px; color:var(--on-dark-soft); margin-top:18px; max-width:40ch; line-height:1.6; }
+.auth-foot{ font-size:12.5px; color:var(--on-dark-soft); opacity:.8; }
+
+.auth-panel{ display:flex; align-items:center; justify-content:center; padding:48px 40px; }
+.auth-box{ width:100%; max-width:392px; }
+.auth-box h1{ font-size:clamp(30px,3.4vw,38px); }
+.auth-box .lede{ font-size:15.5px; color:var(--ink-mid); margin:12px 0 30px; line-height:1.6; }
+
+.auth-err{ background:#FBE9E6; border:1.5px solid var(--clay); border-radius:var(--r-md);
+    padding:13px 17px; font-size:14px; font-weight:500; color:var(--clay-deep);
+    margin-bottom:22px; display:flex; gap:10px; align-items:flex-start;
+    animation:rise .34s var(--ease) both; }
+.auth-err svg{ flex-shrink:0; margin-top:1px; }
+
+.auth-box .field{ margin-bottom:18px; }
+.auth-box label{ display:block; font-size:13px; font-weight:600; color:var(--ink-mid); margin-bottom:8px; }
+.auth-box input{ width:100%; border:1.5px solid var(--paper-edge); background:var(--paper);
+    border-radius:12px; padding:14px 16px; font-family:var(--ui); font-size:15.5px; color:var(--ink);
+    outline:none; transition:border-color .16s var(--ease), box-shadow .16s var(--ease); }
+.auth-box input::placeholder{ color:var(--ink-soft); }
+.auth-box input:focus{ border-color:var(--shoot-deep); box-shadow:0 0 0 3.5px rgba(111,191,115,.18); }
+
+.pw{ position:relative; }
+.pw input{ padding-right:74px; }
+.pw button{ position:absolute; right:7px; top:50%; transform:translateY(-50%); background:none;
+    border:0; border-radius:8px; padding:7px 11px; cursor:pointer; font-family:var(--ui);
+    font-size:12.5px; font-weight:700; color:var(--ink-soft); transition:color .16s, background .16s; }
+.pw button:hover{ color:var(--ink); background:var(--cream); }
+
+.auth-go{ width:100%; justify-content:center; margin-top:8px; padding:15px 24px; font-size:15.5px; }
+.auth-alt{ margin-top:26px; padding-top:22px; border-top:1px solid var(--paper-edge);
+    font-size:14.5px; color:var(--ink-mid); text-align:center; }
+.auth-alt a{ font-weight:600; color:var(--shoot-deep); text-decoration:none;
+    border-bottom:1.5px solid transparent; transition:border-color .16s var(--ease); }
+.auth-alt a:hover{ border-color:var(--shoot-deep); }
+
+@media (max-width:900px){
+    .auth{ grid-template-columns:1fr; min-height:0; }
+    .auth-side{ padding:26px 24px 34px; }
+    .auth-side::after{ display:none; }
+    .auth-mid{ margin:24px 0 0; padding:0; }
+    .auth-plant{ width:78px; height:96px; margin-bottom:22px; }
+    .auth-side h2{ font-size:26px; }
+    .auth-side p{ font-size:14.5px; margin-top:12px; }
+    .auth-foot{ display:none; }
+    .auth-panel{ padding:36px 24px 52px; }
+}
