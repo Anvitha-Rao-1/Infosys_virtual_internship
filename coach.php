@@ -1,140 +1,229 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/helpers.php';
+require_once __DIR__ . '/includes/narrative.php';
+require_once __DIR__ . '/includes/coach_ai.php';
 require_login();
 $user = current_user();
-$uid = $user['id'];
-$page_title = 'AI Coach';
-$active = 'coach';
-$first_name = explode(' ', trim($user['full_name']))[0];
+$uid = (int)$user['id'];
+$page_title = 'Ask Sprout';
+$nav = 'overview';
 
-// ---- Goals not yet checked in today (smart reminders) ----
-$pending_today = goals_pending_today($pdo, $uid);
+// ============================================================
+// ASK SPROUT — the question box over your own data.
+//
+// The engine underneath is UNCHANGED: coach_chat.php still gathers about
+// 45 real figures server-side and hands them to the same writer, which
+// may only repeat numbers it was given. This file is the presentation
+// layer around that, moved onto the new design.
+//
+// The rule-based summary that used to be the whole page is still here,
+// below the conversation — it needs no AI and is always available.
+// ============================================================
 
-// ---- Streaks close to breaking (had a streak, but not done today) ----
-$at_risk = streaks_at_risk($pdo, $uid, $pending_today);
+$chat_history = coach_history($pdo, $uid, 60);
+$ai_on = hf_configured();
 
-// ---- Category with lowest weekly completion (recommendation target) ----
-$stmt = $pdo->prepare("SELECT c.name, c.slug, COUNT(g.id) goal_count,
-    (SELECT COUNT(*) FROM goal_logs gl JOIN goals g2 ON g2.id=gl.goal_id WHERE g2.category_id=c.id AND g2.user_id=? AND gl.status='done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)) as done_week
-    FROM categories c JOIN goals g ON g.category_id=c.id AND g.user_id=? AND g.is_active=1
-    GROUP BY c.id HAVING goal_count > 0");
-$stmt->execute([$uid, $uid]);
-$cats = $stmt->fetchAll();
-$weakest = null;
-foreach ($cats as $c) {
-    $rate = $c['done_week'] / ($c['goal_count'] * 7);
-    $c['rate'] = $rate;
-    if ($weakest === null || $rate < $weakest['rate']) $weakest = $c;
+$today   = nar_today($pdo, $uid);
+$changes = nar_changes($pdo, $uid, 3);
+$first   = htmlspecialchars(explode(' ', trim($user['full_name']))[0]);
+
+// The suggested questions are only offered when the data behind them
+// actually exists — an empty answer is a worse first impression than no
+// suggestion at all.
+$suggestions = ['How am I doing this week?'];
+$fin = get_forecast($pdo, $uid, 'finance');
+if ($fin && ($fin['status'] ?? '') === 'ok') {
+    $suggestions[] = 'Why did my spending change this month?';
+    $suggestions[] = 'Can I reach my savings goal?';
 }
+if (nar_growth($pdo, $uid)['checkins'] > 0) $suggestions[] = 'How are my streaks?';
+$suggestions[] = "What's affecting my productivity?";
+$suggestions[] = 'What should I change?';
 
-// ---- Strongest category this week + most consistent weekday all-time
-// (the other half of the "which categories/days am I doing well/badly
-// on" picture — this page is now the one place these sentences live) ----
-$cat_perf = category_completion_this_week($pdo, $uid);
-$best_cat = $cat_perf[0] ?? null;
-$top_day = best_weekday($pdo, $uid);
-
-// ---- Mood vs completion correlation ----
-$stmt = $pdo->prepare("SELECT ml.log_date, ml.mood, (SELECT COUNT(*) FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id WHERE g.user_id=ml.user_id AND gl.log_date=ml.log_date AND gl.status='done') as done_count
-    FROM mood_logs ml WHERE ml.user_id=? AND ml.log_date >= DATE_SUB(CURDATE(), INTERVAL 20 DAY)");
-$stmt->execute([$uid]);
-$mood_rows = $stmt->fetchAll();
-$low_mood_days = array_filter($mood_rows, fn($r) => in_array($r['mood'], ['stressed','sad']));
-$good_mood_days = array_filter($mood_rows, fn($r) => in_array($r['mood'], ['happy','calm']));
-$mood_insight = null;
-if (count($low_mood_days) >= 2 && count($good_mood_days) >= 2) {
-    $low_avg = array_sum(array_column($low_mood_days, 'done_count')) / count($low_mood_days);
-    $good_avg = array_sum(array_column($good_mood_days, 'done_count')) / count($good_mood_days);
-    if ($good_avg > $low_avg * 1.15) {
-        $mood_insight = "You complete about " . round((($good_avg - $low_avg) / max($low_avg,0.1)) * 100) . "% more habits on days you feel happy or calm, compared to stressed or low days.";
-    }
-}
-
-// ---- Progress trend (last 2 weeks vs previous 2 weeks) ----
-$stmt = $pdo->prepare("SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id WHERE g.user_id=? AND gl.status='done' AND gl.log_date >= DATE_SUB(CURDATE(), INTERVAL 13 DAY)");
-$stmt->execute([$uid]); $recent_2wk = (int)$stmt->fetch()['c'];
-$stmt = $pdo->prepare("SELECT COUNT(*) c FROM goal_logs gl JOIN goals g ON g.id=gl.goal_id WHERE g.user_id=? AND gl.status='done' AND gl.log_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 27 DAY) AND DATE_SUB(CURDATE(), INTERVAL 14 DAY)");
-$stmt->execute([$uid]); $prev_2wk = (int)$stmt->fetch()['c'];
-$trend = null;
-if ($prev_2wk > 0) {
-    $change = round((($recent_2wk - $prev_2wk) / $prev_2wk) * 100);
-    $trend = $change;
-}
-
-require_once __DIR__ . '/includes/header.php';
+require_once __DIR__ . '/includes/shell.php';
 ?>
 
-<div class="coach-hero">
-    <div class="coach-avatar">✨</div>
-    <div>
-        <h3>Hey <?= htmlspecialchars($first_name) ?>, here's your coaching summary</h3>
-        <p>Personalized insights generated from your real check-in and mood data.</p>
+<header class="hero">
+    <div class="hero-in">
+        <div>
+            <p class="hi">Ask Sprout</p>
+            <h1>Ask me anything about <em>your</em> data.</h1>
+            <p class="hero-sub">
+                I can see what you've logged — habits, sleep, focus time and money — and nothing else.
+                If I don't have something, I'll say so rather than make it up.
+            </p>
+        </div>
     </div>
-</div>
+</header>
 
-<div class="section-title"><h2>Smart reminders — today</h2></div>
-<div class="card" style="margin-bottom:26px;">
-    <?php if (empty($pending_today)): ?>
-        <div class="empty-state"><div class="em-ico">🎉</div><p>You're all caught up for today. Nothing pending!</p></div>
-    <?php else: ?>
-        <?php foreach ($pending_today as $g): ?>
-        <a href="habits.php?cat=<?= htmlspecialchars($g['cat_slug']) ?>" class="reminder-chip">⏰ <?= htmlspecialchars($g['title']) ?></a>
+<div class="wrap">
+
+<section class="ch enter" style="padding-top:44px;">
+    <div class="ask">
+        <div class="ask-log" id="log">
+            <?php if (empty($chat_history)): ?>
+            <div class="ask-empty" id="empty">
+                <h3>What would you like to know, <?= $first ?>?</h3>
+                <p>Pick one below, or ask in your own words.</p>
+            </div>
+            <?php else: foreach ($chat_history as $m): ?>
+            <div class="msg <?= $m['role'] === 'user' ? 'mine' : 'theirs' ?>">
+                <?php if ($m['role'] === 'assistant'): ?><div class="msg-av">✦</div><?php endif; ?>
+                <div class="bub">
+                    <?= nl2br(htmlspecialchars($m['content'])) ?>
+                    <?php if ($m['role'] === 'assistant' && $m['source'] === 'fallback'): ?>
+                        <span class="bub-tag">written by Sprout</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endforeach; endif; ?>
+        </div>
+
+        <div class="ask-sugg" id="sugg">
+            <?php foreach ($suggestions as $q): ?>
+            <button type="button"><?= htmlspecialchars($q) ?></button>
+            <?php endforeach; ?>
+        </div>
+
+        <form class="ask-row" id="form" autocomplete="off">
+            <input type="text" id="q" maxlength="<?= COACH_MAX_QUESTION ?>"
+                   placeholder="Ask about your habits, sleep, focus or money…"
+                   aria-label="Ask Sprout a question">
+            <button type="submit" class="btn btn-go" id="send">Ask</button>
+        </form>
+
+        <div class="ask-foot">
+            <span><?= $ai_on
+                ? 'Answers are written from your already-calculated numbers — nothing is invented.'
+                : 'No AI key set up, so Sprout writes these itself. Still your real numbers, just plainer wording.' ?></span>
+            <button id="clear" style="<?= empty($chat_history) ? 'display:none;' : '' ?>">Clear this conversation</button>
+        </div>
+    </div>
+</section>
+
+<!-- ---------- The always-on summary ---------- -->
+<?php if ($changes || $today['at_risk']): ?>
+<section class="ch enter">
+    <div class="ch-head"><h2>While you're here</h2></div>
+    <p class="ch-lead">A few things worth knowing, worked out from your own data. No question needed.</p>
+
+    <div class="grid g-2">
+        <?php foreach ($changes as $i => $c): ?>
+        <article class="ins <?= $c['tone'] ?> enter" data-delay="<?= $i * 70 ?>">
+            <p class="ins-k"><?= htmlspecialchars($c['kicker']) ?></p>
+            <h3 class="ins-h"><?= htmlspecialchars($c['headline']) ?></h3>
+            <p class="ins-b"><?= htmlspecialchars($c['body']) ?></p>
+        </article>
         <?php endforeach; ?>
-    <?php endif; ?>
-</div>
-
-<div class="section-title"><h2>Habit insights & recommendations</h2></div>
-<div class="card">
-    <?php if (!empty($at_risk)): $top = $at_risk[0]; ?>
-    <div class="insight-card">
-        <div class="ins-ico">🔥</div>
-        <p>Your <strong><?= htmlspecialchars($top['goal']['title']) ?></strong> streak is at <strong><?= $top['streak'] ?> days</strong> and isn't checked in yet today — a quick check-in keeps it alive.</p>
     </div>
-    <?php endif; ?>
+</section>
+<?php endif; ?>
 
-    <?php if ($best_cat): ?>
-    <div class="insight-card">
-        <div class="ins-ico">🌟</div>
-        <p><strong><?= htmlspecialchars($best_cat['name']) ?></strong> is your strongest category this week at <strong><?= $best_cat['rate_pct'] ?>%</strong> completion.</p>
-    </div>
-    <?php endif; ?>
+</div><!-- /wrap -->
 
-    <?php if ($weakest && $weakest['rate'] < 0.5): ?>
-    <div class="insight-card">
-        <div class="ins-ico">💡</div>
-        <p><strong><?= htmlspecialchars($weakest['name']) ?></strong> is your least consistent category this week (<?= round($weakest['rate']*100) ?>%). Try picking just one small win there today.</p>
-    </div>
-    <?php endif; ?>
+<script>
+/* ------------------------------------------------------------------
+   The browser only ever sends the question text. Every number in the
+   answer is gathered server-side by coach_chat.php, so nothing here can
+   feed Sprout figures that aren't real.
+   ------------------------------------------------------------------ */
+(function () {
+    const log  = document.getElementById('log');
+    const form = document.getElementById('form');
+    const q    = document.getElementById('q');
+    const send = document.getElementById('send');
+    const sugg = document.getElementById('sugg');
+    const clear = document.getElementById('clear');
+    if (!form) return;
 
-    <?php if ($top_day): ?>
-    <div class="insight-card">
-        <div class="ins-ico">📅</div>
-        <p>You're most consistent on <strong><?= htmlspecialchars($top_day['dname']) ?></strong>s (<?= $top_day['c'] ?> check-ins logged all-time).</p>
-    </div>
-    <?php endif; ?>
+    const esc = s => String(s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const down = () => { log.scrollTop = log.scrollHeight; };
 
-    <?php if ($mood_insight): ?>
-    <div class="insight-card">
-        <div class="ins-ico">💛</div>
-        <p><?= htmlspecialchars($mood_insight) ?> Keeping habits light on tough days can help protect your streaks.</p>
-    </div>
-    <?php endif; ?>
+    function add(role, text, tag) {
+        document.getElementById('empty')?.remove();
+        const el = document.createElement('div');
+        el.className = 'msg ' + (role === 'user' ? 'mine' : 'theirs');
+        el.innerHTML = (role === 'user' ? '' : '<div class="msg-av">✦</div>') +
+            '<div class="bub">' + esc(text).replace(/\n/g, '<br>') +
+            (tag ? '<span class="bub-tag">' + esc(tag) + '</span>' : '') + '</div>';
+        log.appendChild(el); down(); return el;
+    }
 
-    <?php if ($trend !== null): ?>
-    <div class="insight-card">
-        <div class="ins-ico"><?= $trend >= 0 ? '📈' : '📉' ?></div>
-        <p>Your check-ins are <strong><?= $trend >= 0 ? 'up' : 'down' ?> <?= abs($trend) ?>%</strong> over the last 2 weeks compared to the 2 weeks before that.</p>
-    </div>
-    <?php endif; ?>
+    function thinking() {
+        const el = document.createElement('div');
+        el.className = 'msg theirs';
+        el.innerHTML = '<div class="msg-av">✦</div><div class="bub dots"><span></span><span></span><span></span></div>';
+        log.appendChild(el); down(); return el;
+    }
 
-    <?php if (empty($at_risk) && !$mood_insight && $trend === null && !$best_cat && !$top_day && (!$weakest || $weakest['rate'] >= 0.5)): ?>
-    <div class="empty-state"><div class="em-ico">✨</div><p>Keep checking in daily — insights get sharper the more data you log.</p></div>
-    <?php endif; ?>
-</div>
+    async function ask(text) {
+        add('user', text);
+        q.value = '';
+        q.disabled = send.disabled = true;
+        send.textContent = '…';
+        const wait = thinking();
 
-<div class="alert" style="background:var(--lightgray); color:var(--ink-soft); margin-top:24px; font-weight:500;">
-    ℹ️ These recommendations are generated by analysing patterns in your own logged data (streaks, category rates, mood correlation, and trend comparisons) — not a live external AI API call.
-</div>
+        try {
+            const res = await fetch('coach_chat.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ message: text }).toString()
+            });
+            const d = await res.json();
+            wait.remove();
+            if (!d.ok) {
+                add('assistant', d.error || 'That did not work. Try asking again.');
+            } else {
+                add('assistant', d.text, d.source === 'fallback' ? 'written by Sprout' : null);
+                if (clear) clear.style.display = '';
+            }
+        } catch (e) {
+            wait.remove();
+            add('assistant', "I couldn't reach the server just then. Everything you've logged is safe — try again in a moment.");
+        } finally {
+            q.disabled = send.disabled = false;
+            send.textContent = 'Ask';
+            q.focus();
+        }
+    }
 
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+    form.addEventListener('submit', e => {
+        e.preventDefault();
+        const t = q.value.trim();
+        if (t) ask(t);
+    });
+
+    sugg?.addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (b && !q.disabled) ask(b.textContent.trim());
+    });
+
+    clear?.addEventListener('click', async () => {
+        if (!confirm('Clear this conversation? Nothing you have logged is affected.')) return;
+        await fetch('coach_chat.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'clear=1'
+        });
+        log.innerHTML = '<div class="ask-empty" id="empty"><h3>Cleared.</h3>' +
+                        '<p>Ask me something new whenever you like.</p></div>';
+        clear.style.display = 'none';
+    });
+
+    // Arriving from a question asked elsewhere (the Overview's Ask box
+    // links here with ?q=...), so the answer appears without the person
+    // having to type it a second time.
+    const params = new URLSearchParams(location.search);
+    const incoming = (params.get('q') || '').trim();
+    if (incoming) {
+        history.replaceState({}, '', 'coach.php');
+        ask(incoming);
+    }
+
+    down();
+})();
+</script>
+
+<?php require_once __DIR__ . '/includes/shell_end.php'; ?>

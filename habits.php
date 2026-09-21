@@ -1,23 +1,29 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/helpers.php';
+require_once __DIR__ . '/includes/narrative.php';
 require_login();
 $user = current_user();
-$uid = $user['id'];
+$uid = (int)$user['id'];
 $page_title = 'Habits';
-$active = 'habits';
+$nav = 'habits';
 
-// Habits — the ONE place to check off goals (merges what used to be
-// Activity Tracker + Habit Tracker + the per-category work/study/fitness/
-// academic pages, which all rendered this same goal-card + streak-ring +
-// week-check-box list with only cosmetic differences). Aggregate stats
-// (habit score, streaks, heatmap) live on Insights now — this page is
-// pure data entry, per the Track-page rule.
+// ============================================================
+// HABITS — one place to keep the streak alive.
+//
+// Under the new six-section structure this is also where mood lives, so
+// the whole "did I look after myself today" question is answered in one
+// screen instead of two.
+//
+// The POST handlers below are UNCHANGED from the previous version of this
+// page (add goal, delete goal) plus the mood handler lifted verbatim from
+// mood.php. Check-ins still go through toggle_log.php via js/app.js.
+// Nothing about how data is written has changed — only how it looks.
+// ============================================================
 
 $categories = get_all_categories($pdo);
 $filter = $_GET['cat'] ?? 'all';
 
-// Handle "add goal" form submission (quick-add while checking in)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_goal'])) {
     $title = trim($_POST['title'] ?? '');
     $desc  = trim($_POST['description'] ?? '');
@@ -40,12 +46,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_goal'])) {
     exit;
 }
 
+// Mood — same insert/update as mood.php, so one day still means one row.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mood'])) {
+    $mood = $_POST['mood'] ?? '';
+    if (array_key_exists($mood, MOOD_META)) {
+        $stmt = $pdo->prepare("INSERT INTO mood_logs (user_id, log_date, mood)
+            VALUES (?, CURDATE(), ?)
+            ON DUPLICATE KEY UPDATE mood=VALUES(mood)");
+        $stmt->execute([$uid, $mood]);
+        evaluate_achievements($pdo, $uid);
+    }
+    header('Location: habits.php?cat=' . urlencode($filter) . '&mood=1');
+    exit;
+}
+
 $query = "SELECT g.*, c.slug AS cat_slug, c.name AS cat_name FROM goals g JOIN categories c ON c.id=g.category_id WHERE g.user_id=? AND g.is_active=1";
 $params = [$uid];
-if ($filter !== 'all') {
-    $query .= " AND c.slug=?";
-    $params[] = $filter;
-}
+if ($filter !== 'all') { $query .= " AND c.slug=?"; $params[] = $filter; }
 $query .= " ORDER BY g.created_at DESC";
 $stmt = $pdo->prepare($query);
 $stmt->execute($params);
@@ -55,130 +72,209 @@ $dates = week_dates();
 $day_labels = ['M','T','W','T','F','S','S'];
 $today_str = date('Y-m-d');
 
-require_once __DIR__ . '/includes/header.php';
+$today = nar_today($pdo, $uid);
+$growth = nar_growth($pdo, $uid);
+$mood_today = todays_mood($pdo, $uid);
+
+require_once __DIR__ . '/includes/shell.php';
 ?>
 
-<?php if (isset($_GET['added'])): ?><div class="alert alert-success">Goal added 🌱</div><?php endif; ?>
-
-<div class="day-strip">
-    <?php foreach ($dates as $i => $d):
-        $dt = new DateTime($d);
-        $isToday = $d === $today_str;
-    ?>
-    <div class="d-tile <?= $isToday ? 'today' : '' ?>">
-        <div class="d-num"><?= $dt->format('j') ?></div>
-        <div class="d-name"><?= $day_labels[$i] ?></div>
-    </div>
-    <?php endforeach; ?>
-</div>
-
-<div class="section-title">
-    <h2>Habits</h2>
-    <button class="btn btn-violet btn-sm" onclick="document.getElementById('addGoalModal').classList.add('show')">+ Add goal</button>
-</div>
-
-<div class="seg-tabs" style="flex-wrap:wrap; height:auto;">
-    <button class="<?= $filter === 'all' ? 'active' : '' ?>" onclick="location.href='habits.php?cat=all'">All</button>
-    <?php foreach ($categories as $c): ?>
-    <button class="<?= $filter === $c['slug'] ? 'active' : '' ?>" onclick="location.href='habits.php?cat=<?= $c['slug'] ?>'"><?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?></button>
-    <?php endforeach; ?>
-</div>
-
-<?php if (empty($goals)): ?>
-    <div class="card empty-state">
-        <div class="em-ico">📋</div>
-        <p>No goals in this view yet. Add one to start tracking your streak.</p>
-    </div>
-<?php else: ?>
-<div class="goal-list">
-    <?php foreach ($goals as $g):
-        $pct = week_percent($pdo, $g['id']);
-        $circumference = 2 * M_PI * 24;
-        $offset = $circumference - ($pct / 100) * $circumference;
-        $logged = week_logs($pdo, $g['id']);
-        $logged_flip = array_flip($logged);
-        $streak = current_streak($pdo, $g['id']);
-    ?>
-    <div class="goal-card <?= ($streak >= 3 && !isset($logged_flip[$today_str])) ? 'attention' : '' ?>" data-goal-id="<?= $g['id'] ?>">
-        <div class="streak-ring">
-            <svg width="62" height="62" viewBox="0 0 62 62">
-                <circle class="ring-bg" cx="31" cy="31" r="24"></circle>
-                <circle class="ring-fg" cx="31" cy="31" r="24" stroke-dasharray="<?= $circumference ?>" stroke-dashoffset="<?= $offset ?>"></circle>
-            </svg>
-            <div class="ring-num"><?= $pct ?>%</div>
+<header class="hero">
+    <div class="hero-in">
+        <div>
+            <p class="hi">Habits</p>
+            <h1><?= $today['total'] > 0
+                ? htmlspecialchars($today['headline'])
+                : 'Pick something small.' ?></h1>
+            <p class="hero-sub"><?= $today['total'] > 0
+                ? 'Tick a day to check in. Miss one and the run resets — that is the whole game.'
+                : 'One habit, done most days, beats five you abandon in a fortnight.' ?></p>
         </div>
-        <div class="goal-info">
-            <h3><?= htmlspecialchars($g['title']) ?></h3>
-            <p><?= htmlspecialchars($g['description'] ?: ucfirst($g['frequency']) . ' goal') ?></p>
-            <span class="goal-tag"><?= htmlspecialchars($g['cat_name']) ?></span>
-            <?php if ($streak > 0): ?><span class="goal-tag">🔥 <?= $streak ?>d streak</span><?php endif; ?>
-        </div>
-        <div class="week-check">
-            <?php foreach ($dates as $i => $d):
-                $isFuture = $d > $today_str;
-                $isDone = isset($logged_flip[$d]);
-                $cls = $isFuture ? 'future' : ($isDone ? 'done' : '');
-            ?>
-            <div class="day-box <?= $cls ?>" data-date="<?= $d ?>" data-goal="<?= $g['id'] ?>" title="<?= $d ?>">
-                <?= $day_labels[$i] ?>
+        <div class="hero-stats">
+            <div>
+                <div class="hstat-n"><span data-count="<?= $growth['current_streak'] ?>"><?= $growth['current_streak'] ?></span></div>
+                <div class="hstat-l">day run right now</div>
             </div>
-            <?php endforeach; ?>
-        </div>
-        <div class="goal-actions">
-            <form method="POST" onsubmit="return confirm('Delete this goal and all its history?');">
-                <input type="hidden" name="goal_id" value="<?= $g['id'] ?>">
-                <button type="submit" name="delete_goal" class="icon-btn" title="Delete goal">🗑</button>
-            </form>
+            <div>
+                <div class="hstat-n"><span data-count="<?= $growth['best_ever'] ?>"><?= $growth['best_ever'] ?></span></div>
+                <div class="hstat-l">your record</div>
+            </div>
         </div>
     </div>
-    <?php endforeach; ?>
-</div>
+</header>
+
+<div class="wrap">
+
+<?php if (isset($_GET['added'])): ?>
+<div class="flash" style="margin-top:34px;">Habit added. It starts counting from today.</div>
+<?php elseif (isset($_GET['mood'])): ?>
+<div class="flash" style="margin-top:34px;">Noted — thanks for checking in with yourself.</div>
 <?php endif; ?>
 
-<!-- Add Goal Modal -->
-<div class="modal-overlay" id="addGoalModal">
-    <div class="modal-box">
-        <h3>New goal</h3>
+<!-- ---------- Mood ---------- -->
+<section class="ch enter" style="padding-top:<?= isset($_GET['added']) || isset($_GET['mood']) ? '28px' : '56px' ?>;">
+    <div class="ch-head"><h2>How's today going?</h2></div>
+    <p class="ch-lead">
+        <?= $mood_today
+            ? 'You logged <strong>' . htmlspecialchars(MOOD_META[$mood_today['mood']]['label']) . '</strong> today. Change it if things have shifted.'
+            : 'One tap. It turns out how you feel and whether you show up are closely linked.' ?>
+    </p>
+    <form method="POST" class="mood">
+        <?php foreach (MOOD_META as $key => $m): ?>
+        <button type="submit" name="mood" value="<?= $key ?>"
+                class="<?= $mood_today && $mood_today['mood'] === $key ? 'on' : '' ?>">
+            <span class="em"><?= $m['emoji'] ?></span>
+            <span class="lb"><?= $m['label'] ?></span>
+        </button>
+        <?php endforeach; ?>
+        <input type="hidden" name="save_mood" value="1">
+    </form>
+</section>
+
+<!-- ---------- The habits ---------- -->
+<section class="ch enter">
+    <div class="ch-head" style="justify-content:space-between; width:100%;">
+        <h2>Your habits</h2>
+        <button class="btn btn-go" onclick="document.getElementById('addSheet').classList.add('show')">Add a habit</button>
+    </div>
+    <p class="ch-lead">This week, day by day. Green means done.</p>
+
+    <div class="chips">
+        <a class="chip <?= $filter === 'all' ? 'on' : '' ?>" href="habits.php?cat=all">Everything</a>
+        <?php foreach ($categories as $c): ?>
+        <a class="chip <?= $filter === $c['slug'] ? 'on' : '' ?>" href="habits.php?cat=<?= $c['slug'] ?>">
+            <?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?>
+        </a>
+        <?php endforeach; ?>
+    </div>
+
+    <?php if (empty($goals)): ?>
+        <div class="panel" style="text-align:center; padding:48px 24px;">
+            <h3 style="font-size:21px;"><?= $filter === 'all' ? 'Nothing planted yet.' : 'Nothing here yet.' ?></h3>
+            <p style="color:var(--ink-mid); font-size:14.5px; margin:10px auto 22px; max-width:42ch;">
+                <?= $filter === 'all'
+                    ? 'Add one habit you would like to keep. Starting with a single easy one works better than starting with five.'
+                    : 'No habits in this category. Add one, or look at everything instead.' ?>
+            </p>
+            <button class="btn btn-go" onclick="document.getElementById('addSheet').classList.add('show')">Add a habit</button>
+        </div>
+    <?php else: ?>
+    <div class="habits">
+        <?php foreach ($goals as $g):
+            $pct = week_percent($pdo, $g['id']);
+            $circ = 2 * M_PI * 24;
+            $off = $circ - ($pct / 100) * $circ;
+            $logged = array_flip(week_logs($pdo, $g['id']));
+            $streak = current_streak($pdo, $g['id']);
+            $at_risk = $streak >= 3 && !isset($logged[$today_str]);
+        ?>
+        <article class="habit <?= $at_risk ? 'risk' : '' ?>">
+            <div class="hring">
+                <svg width="58" height="58" viewBox="0 0 58 58">
+                    <circle class="bg" cx="29" cy="29" r="24"></circle>
+                    <circle class="fg" cx="29" cy="29" r="24"
+                            stroke-dasharray="<?= $circ ?>" stroke-dashoffset="<?= $off ?>"></circle>
+                </svg>
+                <span><?= $pct ?>%</span>
+            </div>
+
+            <div>
+                <h3><?= htmlspecialchars($g['title']) ?></h3>
+                <div class="habit-meta">
+                    <span><?= htmlspecialchars($g['cat_name']) ?></span>
+                    <?php if ($streak > 0): ?>
+                        <span class="<?= $at_risk ? 'fire' : '' ?>">
+                            <?= $streak ?>-day run<?= $at_risk ? ' · not ticked yet' : '' ?>
+                        </span>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="week">
+                <?php foreach ($dates as $i => $d):
+                    $future = $d > $today_str;
+                    $done = isset($logged[$d]);
+                ?>
+                <div class="wd day-box <?= $future ? 'future' : ($done ? 'done' : '') ?> <?= $d === $today_str ? 'is-today' : '' ?>"
+                     data-date="<?= $d ?>" data-goal="<?= $g['id'] ?>"
+                     title="<?= date('D j M', strtotime($d)) ?>"><?= $day_labels[$i] ?></div>
+                <?php endforeach; ?>
+            </div>
+
+            <form method="POST" onsubmit="return confirm('Delete <?= htmlspecialchars(addslashes($g['title'])) ?> and its whole history? This cannot be undone.');">
+                <input type="hidden" name="goal_id" value="<?= $g['id'] ?>">
+                <button type="submit" name="delete_goal" class="kill" title="Delete this habit" aria-label="Delete <?= htmlspecialchars($g['title']) ?>">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3"/>
+                    </svg>
+                </button>
+            </form>
+        </article>
+        <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+</section>
+
+</div><!-- /wrap -->
+
+<!-- ---------- Add habit ---------- -->
+<div class="veil" id="addSheet">
+    <div class="sheet">
+        <h2>A new habit</h2>
+        <p class="note">Keep it small enough that a bad day can't stop you.</p>
         <form method="POST">
             <div class="field">
-                <label>Goal title</label>
-                <input type="text" name="title" placeholder="e.g. Read for 30 minutes" required>
+                <label for="h-title">What will you do?</label>
+                <input id="h-title" type="text" name="title" placeholder="Read for 20 minutes" required>
             </div>
             <div class="field">
-                <label>Description (optional)</label>
-                <input type="text" name="description" placeholder="Any notes about this goal">
+                <label for="h-desc">Any detail (optional)</label>
+                <input id="h-desc" type="text" name="description" placeholder="Fiction, before bed">
             </div>
             <div class="field">
-                <label>Category</label>
-                <select name="category_id" required>
+                <label for="h-cat">Which part of your life?</label>
+                <select id="h-cat" name="category_id" required>
                     <?php foreach ($categories as $c): ?>
-                    <option value="<?= $c['id'] ?>" <?= $filter === $c['slug'] ? 'selected' : '' ?>><?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?></option>
+                    <option value="<?= $c['id'] ?>" <?= $filter === $c['slug'] ? 'selected' : '' ?>>
+                        <?= $c['icon'] ?> <?= htmlspecialchars($c['name']) ?>
+                    </option>
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="form-row">
+            <div class="row2">
                 <div class="field">
-                    <label>Frequency</label>
-                    <select name="frequency">
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
+                    <label for="h-freq">How often</label>
+                    <select id="h-freq" name="frequency">
+                        <option value="daily">Every day</option>
+                        <option value="weekly">Some days</option>
                     </select>
                 </div>
                 <div class="field">
-                    <label>Target days / week</label>
-                    <input type="number" name="target_per_week" min="1" max="7" value="7">
+                    <label for="h-target">Days a week</label>
+                    <input id="h-target" type="number" name="target_per_week" min="1" max="7" value="7">
                 </div>
             </div>
             <div class="field">
-                <label>Typical time per check-in (minutes)</label>
-                <input type="number" name="est_minutes" min="1" max="240" value="20">
+                <label for="h-mins">Roughly how long, in minutes</label>
+                <input id="h-mins" type="number" name="est_minutes" min="1" max="240" value="20">
             </div>
-            <div class="modal-close-row">
-                <button type="button" class="btn btn-ghost" onclick="document.getElementById('addGoalModal').classList.remove('show')">Cancel</button>
-                <button type="submit" name="add_goal" class="btn btn-primary">Save goal</button>
+            <div class="sheet-foot">
+                <button type="button" class="btn btn-line" onclick="document.getElementById('addSheet').classList.remove('show')">Cancel</button>
+                <button type="submit" name="add_goal" class="btn btn-go">Add habit</button>
             </div>
         </form>
     </div>
 </div>
 
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<script>
+/* Close the sheet on the backdrop or Escape — the two things people try. */
+(function () {
+    const veil = document.getElementById('addSheet');
+    if (!veil) return;
+    veil.addEventListener('click', e => { if (e.target === veil) veil.classList.remove('show'); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') veil.classList.remove('show'); });
+})();
+</script>
+
+<?php require_once __DIR__ . '/includes/shell_end.php'; ?>

@@ -1,9 +1,8 @@
 <?php
-// insights.php has moved — everything it used to show (Overview, Trends,
-// Correlations, Forecast) now lives split across analyse.php's
-// Productivity and Habits tabs. This file only preserves the old URL/
-// bookmark so it doesn't 404.
+// insights.php has moved. What it used to show now lives on Productivity
+// (trends, rhythm, what's next) and the Overview (the headline picture).
+// This file only keeps the old URL working.
 require_once __DIR__ . '/includes/auth.php';
 require_login();
-header('Location: analyse.php#productivity');
+header('Location: focus.php');
 exit;
